@@ -10,6 +10,7 @@ import { initDatabase, closeDatabase } from "./memory/db.js";
 import { createLLMProvider } from "./llm/provider.js";
 import { ToolRegistry } from "./tools/registry.js";
 import { getTimeTool } from "./tools/get-time.js";
+import { searchWebTool } from "./tools/search.js";
 import { createBot } from "./telegram/bot.js";
 
 async function main(): Promise<void> {
@@ -21,6 +22,7 @@ async function main(): Promise<void> {
     // 2. Tool Registry
     const toolRegistry = new ToolRegistry();
     toolRegistry.register(getTimeTool);
+    toolRegistry.register(searchWebTool);
     logger.info(`🔧 ${toolRegistry.size} tool(s) registered: ${toolRegistry.listNames().join(", ")}`);
 
     // 3. LLM Provider
