@@ -10,6 +10,9 @@ import type { ToolDefinition, ToolSchema } from "../types.js";
 export class ToolRegistry {
     private tools: Map<string, ToolDefinition> = new Map();
 
+    /**
+     * Register a new tool. Throws if a tool with the same name already exists.
+     */
     register(tool: ToolDefinition): void {
         if (this.tools.has(tool.name)) {
             throw new Error(`Tool "${tool.name}" is already registered.`);
@@ -18,6 +21,9 @@ export class ToolRegistry {
         logger.info(`🔧 Tool registered: ${tool.name}`);
     }
 
+    /**
+     * Get all tool schemas formatted for the LLM (OpenAI function calling format).
+     */
     getSchemas(): ToolSchema[] {
         return Array.from(this.tools.values()).map((tool) => ({
             type: "function" as const,
@@ -29,13 +35,19 @@ export class ToolRegistry {
         }));
     }
 
+    /**
+     * Execute a tool by name with the given arguments.
+     * Returns the result string, or an error message if the tool fails.
+     */
     async execute(name: string, rawArgs: string): Promise<string> {
         const tool = this.tools.get(name);
+
         if (!tool) {
             const msg = `Tool "${name}" not found. Available tools: ${this.listNames().join(", ")}`;
             logger.warn(msg);
             return `Error: ${msg}`;
         }
+
         try {
             const args = JSON.parse(rawArgs) as Record<string, unknown>;
             logger.debug(`Executing tool: ${name}`, { args });
@@ -49,10 +61,16 @@ export class ToolRegistry {
         }
     }
 
+    /**
+     * List all registered tool names.
+     */
     listNames(): string[] {
         return Array.from(this.tools.keys());
     }
 
+    /**
+     * Get the count of registered tools.
+     */
     get size(): number {
         return this.tools.size;
     }
