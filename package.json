@@ -18,6 +18,9 @@
   ],
   "author": "",
   "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
   "dependencies": {
     "@octokit/rest": "^22.0.1",
     "dotenv": "^16.4.0",
