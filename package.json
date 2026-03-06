@@ -23,11 +23,10 @@
     "dotenv": "^16.4.0",
     "firebase-admin": "^13.0.0",
     "grammy": "^1.35.0",
-    "zod": "^3.24.2"
-  },
-  "devDependencies": {
+    "zod": "^3.24.2",
     "@types/node": "^22.0.0",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0"
-  }
+  },
+  "devDependencies": {}
 }
