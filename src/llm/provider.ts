@@ -8,6 +8,7 @@ import { config } from "../config.js";
 import { logger } from "../logger.js";
 import { GroqProvider, GroqError } from "./groq.js";
 import { OpenRouterProvider } from "./openrouter.js";
+import { KimiProvider } from "./kimi.js";
 import type { LLMMessage, LLMProvider, LLMResponse, ToolSchema } from "../types.js";
 
 /**
@@ -54,9 +55,12 @@ export function createLLMProvider(): LLMProvider {
     let fallback: OpenRouterProvider | null = null;
     if (config.OPENROUTER_API_KEY) {
         fallback = new OpenRouterProvider(config.OPENROUTER_API_KEY, config.OPENROUTER_MODEL);
-        logger.info("🤖 LLM: Groq (primary) + OpenRouter (fallback)");
+    }
+
+    if (config.KIMI_API_KEY) {
+        logger.info("🤖 LLM: Groq (primary) + OpenRouter (fallback) + Kimi (integrated)");
     } else {
-        logger.info("🤖 LLM: Groq only (no fallback configured)");
+        logger.info(`🤖 LLM: Groq (primary) ${fallback ? "+ OpenRouter (fallback)" : ""}`);
     }
 
     return new FailoverProvider(groq, fallback);
