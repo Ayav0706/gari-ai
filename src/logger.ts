@@ -1,9 +1,19 @@
 // ============================================
 // GARI – Logger
 // ============================================
-// Simple timestamped logger. NEVER logs secrets or sensitive data.
+// Simple colored timestamped logger.
+// Levels: debug, info, warn, error
+// Debug only shows in NODE_ENV=development.
 
 type LogLevel = "debug" | "info" | "warn" | "error";
+
+const COLORS = {
+    debug: "\x1b[36m",  // Cyan
+    info: "\x1b[32m",   // Green
+    warn: "\x1b[33m",   // Yellow
+    error: "\x1b[31m",  // Red
+    reset: "\x1b[0m",
+} as const;
 
 const LEVEL_PRIORITY: Record<LogLevel, number> = {
     debug: 0,
@@ -12,30 +22,21 @@ const LEVEL_PRIORITY: Record<LogLevel, number> = {
     error: 3,
 };
 
-const LEVEL_COLORS: Record<LogLevel, string> = {
-    debug: "\x1b[90m", // gray
-    info: "\x1b[36m",  // cyan
-    warn: "\x1b[33m",  // yellow
-    error: "\x1b[31m", // red
-};
-
-const RESET = "\x1b[0m";
-
 class Logger {
     private minLevel: LogLevel;
 
-    constructor(minLevel: LogLevel = "info") {
-        this.minLevel = minLevel;
+    constructor() {
+        this.minLevel = process.env.NODE_ENV === "production" ? "info" : "debug";
     }
 
     private log(level: LogLevel, message: string, meta?: Record<string, unknown>): void {
         if (LEVEL_PRIORITY[level] < LEVEL_PRIORITY[this.minLevel]) return;
 
         const timestamp = new Date().toISOString();
-        const color = LEVEL_COLORS[level];
-        const prefix = `${color}[${timestamp}] [${level.toUpperCase()}]${RESET}`;
+        const color = COLORS[level];
+        const prefix = `${color}[${timestamp}] [${level.toUpperCase()}]${COLORS.reset}`;
 
-        if (meta) {
+        if (meta && Object.keys(meta).length > 0) {
             console.log(`${prefix} ${message}`, meta);
         } else {
             console.log(`${prefix} ${message}`);
@@ -59,6 +60,4 @@ class Logger {
     }
 }
 
-export const logger = new Logger(
-    (process.env.LOG_LEVEL as LogLevel) ?? "info"
-);
+export const logger = new Logger();
