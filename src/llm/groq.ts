@@ -89,7 +89,6 @@ export class GroqProvider implements LLMProvider {
             method: "POST",
             headers: {
                 Authorization: `Bearer ${this.apiKey}`,
-                // Note: Do not manually set Content-Type, fetch sets it with boundaries for FormData
             },
             body: formData as unknown as BodyInit,
         });
