@@ -11,6 +11,7 @@ import { createLLMProvider } from "./llm/provider.js";
 import { ToolRegistry } from "./tools/registry.js";
 import { getTimeTool } from "./tools/get-time.js";
 import { searchWebTool } from "./tools/search.js";
+import { webSearchTool } from "./tools/web-search.js";
 import { googleWorkspaceTool } from "./tools/google-workspace.js";
 import { codingSkillsTool } from "./tools/coding-skills.js";
 import { createBot } from "./telegram/bot.js";
@@ -25,6 +26,7 @@ async function main(): Promise<void> {
     const toolRegistry = new ToolRegistry();
     toolRegistry.register(getTimeTool);
     toolRegistry.register(searchWebTool);
+    toolRegistry.register(webSearchTool);
     toolRegistry.register(googleWorkspaceTool);
     toolRegistry.register(codingSkillsTool);
     logger.info(`🔧 ${toolRegistry.size} tool(s) registered: ${toolRegistry.listNames().join(", ")}`);
