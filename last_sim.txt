@@ -1,0 +1,13 @@
+Starting local simulation...
+[36m[2026-03-06T22:11:51.698Z] [INFO][0m 🗄️  Firebase Firestore connected successfully.
+[36m[2026-03-06T22:11:51.700Z] [INFO][0m 🔧 Tool registered: get_current_time
+[36m[2026-03-06T22:11:51.700Z] [INFO][0m 🔧 Tool registered: search_wikipedia
+[36m[2026-03-06T22:11:51.700Z] [INFO][0m 🤖 LLM: Groq (primary) + OpenRouter (fallback)
+User says: Ya puedes buscar en internet gari ?
+(node:14360) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+[31m[2026-03-06T22:11:53.617Z] [ERROR][0m Groq API error (400): {
+  error: `{"error":{"message":"Failed to call a function. Please adjust your prompt. See 'failed_generation' for more details.","type":"invalid_request_error","code":"tool_use_failed","failed_generation":"\\u003cfunction=search_wikipedia({\\"query\\": \\"Nemesio Oseguera Cervantes muerte\\"})\\u003c/function\\u003e"}}\n`
+}
+[31m[2026-03-06T22:11:53.618Z] [ERROR][0m LLM call failed: { error: 'Groq API returned 400' }
+Gari replies: ⚠️ Lo siento, hubo un error al procesar tu mensaje. Intenta de nuevo en un momento.
