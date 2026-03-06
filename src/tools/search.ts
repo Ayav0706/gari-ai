@@ -19,7 +19,6 @@ export const searchWebTool: ToolDefinition = {
         logger.info(`Searching Wikipedia for: ${query}`);
 
         try {
-            // First search for the article title
             const searchRes = await fetch(`https://es.wikipedia.org/w/api.php?action=opensearch&search=${encodeURIComponent(query)}&limit=1&namespace=0&format=json`);
             if (!searchRes.ok) return "Error searching Wikipedia.";
 
@@ -31,7 +30,6 @@ export const searchWebTool: ToolDefinition = {
 
             const title = titles[0];
 
-            // Get extract
             const extractRes = await fetch(`https://es.wikipedia.org/w/api.php?action=query&prop=extracts&exsentences=5&exlimit=1&titles=${encodeURIComponent(title)}&explaintext=1&formatversion=2&format=json`);
             const extractData = await extractRes.json();
 

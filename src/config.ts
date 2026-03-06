@@ -32,8 +32,11 @@ const envSchema = z.object({
     // Database
     DB_PATH: z.string().default("./data/memory.db"),
 
-    // Future: Google credentials
+    // Firebase credentials
     GOOGLE_APPLICATION_CREDENTIALS: z.string().default("./service-account.json"),
+
+    // ElevenLabs TTS (optional)
+    ELEVENLABS_API_KEY: z.string().default(""),
 });
 
 export type Config = z.infer<typeof envSchema>;

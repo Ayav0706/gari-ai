@@ -16,8 +16,10 @@ import {
     listMemories,
     clearConversation,
 } from "../memory/db.js";
+import { isTTSAvailable, textToSpeech } from "../tts/elevenlabs.js";
 import type { LLMProvider } from "../types.js";
 import type { ToolRegistry } from "../tools/registry.js";
+import { InputFile } from "grammy";
 
 /**
  * Create and configure the Telegram bot.
@@ -27,12 +29,11 @@ export function createBot(llm: LLMProvider, toolRegistry: ToolRegistry): Bot {
     const bot = new Bot(config.TELEGRAM_BOT_TOKEN);
 
     // ── Auth Middleware ──────────────────────────
-    // Silently ignores messages from unauthorized users.
     bot.use(async (ctx, next) => {
         const userId = ctx.from?.id;
         if (!userId || !config.TELEGRAM_ALLOWED_USER_IDS.includes(userId)) {
             logger.warn(`🚫 Unauthorized access attempt from user ${userId ?? "unknown"}`);
-            return; // Silent rejection — don't reveal bot exists
+            return;
         }
         await next();
     });
@@ -156,10 +157,8 @@ export function createBot(llm: LLMProvider, toolRegistry: ToolRegistry): Bot {
 
         logger.info(`💬 Message from ${userId}: ${userMessage.slice(0, 100)}...`);
 
-        // Show typing indicator while processing
         await ctx.replyWithChatAction("typing");
 
-        // Set up a typing interval (Telegram typing indicator lasts ~5s)
         const typingInterval = setInterval(async () => {
             try {
                 await ctx.replyWithChatAction("typing");
@@ -171,7 +170,6 @@ export function createBot(llm: LLMProvider, toolRegistry: ToolRegistry): Bot {
         try {
             const reply = await runAgentLoop(userMessage, userId, llm, toolRegistry);
 
-            // Split long messages (Telegram limit: 4096 chars)
             if (reply.length > 4000) {
                 const chunks = splitMessage(reply, 4000);
                 for (const chunk of chunks) {
@@ -231,7 +229,15 @@ export function createBot(llm: LLMProvider, toolRegistry: ToolRegistry): Bot {
             try {
                 const reply = await runAgentLoop(transcription, userId, llm, toolRegistry);
 
-                if (reply.length > 4000) {
+                if (isTTSAvailable() && reply.length < 4500) {
+                    const audioBuffer = await textToSpeech(reply);
+                    if (audioBuffer) {
+                        await ctx.replyWithVoice(new InputFile(audioBuffer, "response.mp3"));
+                        await ctx.reply(reply, { parse_mode: "Markdown" });
+                    } else {
+                        await ctx.reply(reply, { parse_mode: "Markdown" });
+                    }
+                } else if (reply.length > 4000) {
                     const chunks = splitMessage(reply, 4000);
                     for (const chunk of chunks) {
                         await ctx.reply(chunk, { parse_mode: "Markdown" });
@@ -271,10 +277,8 @@ function splitMessage(text: string, maxLength: number): string[] {
             break;
         }
 
-        // Try to break at a newline
         let breakPoint = remaining.lastIndexOf("\n", maxLength);
         if (breakPoint === -1 || breakPoint < maxLength * 0.5) {
-            // No good newline found, break at space
             breakPoint = remaining.lastIndexOf(" ", maxLength);
         }
         if (breakPoint === -1) {

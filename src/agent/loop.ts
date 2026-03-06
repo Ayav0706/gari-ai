@@ -36,16 +36,14 @@ export async function runAgentLoop(
     llm: LLMProvider,
     toolRegistry: ToolRegistry
 ): Promise<string> {
-    // Build conversation context
-    // Let the LLM know about some tools
     const memorySummary = await getMemorySummary(userId);
     const systemPrompt = memorySummary
-        ? `You are Gari, a helpful personal AI assistant running locally.\nHere are some things you know about the user:\n${memorySummary}`
-        : `You are Gari, a helpful personal AI assistant running locally.`;
+        ? `${SYSTEM_PROMPT}\n\nHere are some things you know about the user:\n${memorySummary}`
+        : SYSTEM_PROMPT;
 
     const messages: LLMMessage[] = [{ role: "system", content: systemPrompt }];
 
-    // Load recent history (last 10 messages to save context)
+    // Load recent history
     const history = await getRecentMessages(userId, 10);
     messages.push(...(history as LLMMessage[]));
 
@@ -74,10 +72,8 @@ export async function runAgentLoop(
 
         // If the LLM wants to call tools
         if (finish_reason === "tool_calls" && message.tool_calls && message.tool_calls.length > 0) {
-            // Add assistant message with tool calls to context
             messages.push(message);
 
-            // Execute each tool call
             for (const toolCall of message.tool_calls) {
                 logger.info(`🔧 Tool call: ${toolCall.function.name}`);
                 const result = await toolRegistry.execute(
@@ -85,7 +81,6 @@ export async function runAgentLoop(
                     toolCall.function.arguments
                 );
 
-                // Add tool result to context
                 messages.push({
                     role: "tool",
                     content: result,
@@ -94,20 +89,18 @@ export async function runAgentLoop(
                 });
             }
 
-            // Continue the loop so the LLM can process the tool results
             continue;
         }
 
         // LLM returned a text response → we're done
         const reply = message.content ?? "🤔 No tengo una respuesta en este momento.";
 
-        // Save assistant reply to history
         await saveConversationMessage(userId, "assistant", reply);
 
         return reply;
     }
 
-    // Max iterations reached — safety escape
+    // Max iterations reached
     logger.warn(`Agent loop reached max iterations (${MAX_ITERATIONS}) for user ${userId}`);
     return "⚠️ He alcanzado el límite de pasos para procesar esta solicitud. ¿Puedes reformular tu pregunta?";
 }

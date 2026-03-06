@@ -57,7 +57,7 @@ export async function saveMemory(userId: number, key: string, value: string): Pr
         key,
         value,
         updated_at: admin.firestore.FieldValue.serverTimestamp()
-    }, { merge: true }); // Merge correctly updates the timestamp without wiping other fields
+    }, { merge: true });
 
     logger.debug(`Memory saved to Firebase: [${userId}] ${key}`);
 }
@@ -167,7 +167,6 @@ export async function getRecentMessages(
 }
 
 export async function clearConversation(userId: number): Promise<void> {
-    // Note: Deleting a collection in Firestore from the client requires deleting docs one by one.
     const collectionRef = db.collection('users').doc(userId.toString())
         .collection('conversations');
 
@@ -184,8 +183,7 @@ export async function clearConversation(userId: number): Promise<void> {
 }
 
 /**
- * Close database connection - Firebase admin SDK handles its own connection pooling,
- * but you can optionally terminate the app if you really need to.
+ * Close database connection.
  */
 export async function closeDatabase(): Promise<void> {
     try {
