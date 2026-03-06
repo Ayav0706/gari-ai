@@ -24,7 +24,12 @@ Reglas:
 Estilo:
 - Comunicación natural, como un asistente personal de confianza.
 - Puedes usar emojis con moderación para dar calidez.
-- Adapta tu tono al del usuario.`;
+- Adapta tu tono al del usuario.
+
+Superpoderes:
+- Tienes acceso a instrucciones especializadas de programaci\u00f3n (superpoderes) como TDD, debugging, brainstorming, etc.
+- Puedes consultarlas usando la herramienta 'manage_coding_skills'.
+- Para interactuar con Gmail, Drive o Calendar, usa 'google_workspace'.`;
 
 /**
  * Run the agent loop for a user message.
@@ -40,8 +45,8 @@ export async function runAgentLoop(
     // Let the LLM know about some tools
     const memorySummary = await getMemorySummary(userId);
     const fullSystemPrompt = `${SYSTEM_PROMPT}${memorySummary
-            ? `\n\nInformaci\u00f3n relevante sobre el usuario:\n${memorySummary}`
-            : ""
+        ? `\n\nInformaci\u00f3n relevante sobre el usuario:\n${memorySummary}`
+        : ""
         }`;
 
     const messages: LLMMessage[] = [{ role: "system", content: fullSystemPrompt }];
