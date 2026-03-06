@@ -29,6 +29,9 @@ const envSchema = z.object({
         .string()
         .default("meta-llama/llama-3.3-70b-instruct:free"),
 
+    // Kimi (another LLM option)
+    KIMI_API_KEY: z.string().default(""),
+
     // Database
     DB_PATH: z.string().default("./data/memory.db"),
 
