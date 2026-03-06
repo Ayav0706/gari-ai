@@ -26,8 +26,10 @@ export const getTimeTool: ToolDefinition = {
 
     execute: async (args: Record<string, unknown>): Promise<string> => {
         const tz = (args.timezone as string) || "local";
+
         try {
             const now = new Date();
+
             if (tz === "local") {
                 return JSON.stringify({
                     datetime: now.toLocaleString("es-ES", {
@@ -38,6 +40,7 @@ export const getTimeTool: ToolDefinition = {
                     timestamp: now.getTime(),
                 });
             }
+
             return JSON.stringify({
                 datetime: now.toLocaleString("es-ES", {
                     timeZone: tz,
