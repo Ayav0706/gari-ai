@@ -9,7 +9,7 @@ export const searchWebTool: ToolDefinition = {
         properties: {
             query: {
                 type: "string",
-                description: "The term to search for (e.g. 'Nemesio Oseguera Cervantes')",
+                description: "T\u00e9rmino o concepto a buscar en Wikipedia.",
             },
         },
         required: ["query"],
