@@ -8,17 +8,28 @@ import { config } from "../config.js";
 import { logger } from "../logger.js";
 
 const ELEVENLABS_API_URL = "https://api.elevenlabs.io/v1/text-to-speech";
+// Rachel voice - warm, clear female voice
 const DEFAULT_VOICE_ID = "21m00Tcm4TlvDq8ikWAM";
 
+/**
+ * Check if ElevenLabs TTS is available (API key configured).
+ */
 export function isTTSAvailable(): boolean {
     return !!config.ELEVENLABS_API_KEY;
 }
 
+/**
+ * Convert text to speech audio buffer (mp3).
+ * Returns null if TTS is not available or fails.
+ */
 export async function textToSpeech(text: string): Promise<Buffer | null> {
     if (!config.ELEVENLABS_API_KEY) {
         return null;
     }
+
+    // ElevenLabs has a 5000 char limit per request
     const truncatedText = text.length > 4500 ? text.slice(0, 4500) + "..." : text;
+
     try {
         const res = await fetch(`${ELEVENLABS_API_URL}/${DEFAULT_VOICE_ID}`, {
             method: "POST",
@@ -37,11 +48,13 @@ export async function textToSpeech(text: string): Promise<Buffer | null> {
                 },
             }),
         });
+
         if (!res.ok) {
             const errorText = await res.text();
             logger.error(`ElevenLabs API error (${res.status}):`, { error: errorText });
             return null;
         }
+
         const arrayBuffer = await res.arrayBuffer();
         return Buffer.from(arrayBuffer);
     } catch (error) {
