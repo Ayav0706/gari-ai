@@ -27,7 +27,7 @@ Reglas de Oro:
 
 Superpoderes:
 - Tienes manuales expertos para: brainstorming, test-driven-development, systematic-debugging, writing-plans, y m\u00e1s.
-- Herramientas: 'search_web' (buscar en todo Internet), 'search_wikipedia' (datos enciclopédicos), 'google_workspace' (Gmail/Drive/Calendar), 'manage_coding_skills' (consultar superpoderes), 'get_current_time'.`;
+- Herramientas: 'search_web' (buscar en Internet), 'search_wikipedia' (datos enciclop\u00e9dicos), 'google_workspace' (Gmail/Drive/Calendar), 'manage_coding_skills' (consultar superpoderes), 'get_current_time', 'read_url' (leer p\u00e1ginas web), 'run_code' (ejecutar JavaScript), 'get_weather' (clima y pron\u00f3stico), 'generate_image' (generar im\u00e1genes con IA), 'deep_research' (investigaci\u00f3n multi-fuente), 'manage_reminders' (crear/listar/eliminar recordatorios).`;
 
 /**
  * Run the agent loop for a user message.
