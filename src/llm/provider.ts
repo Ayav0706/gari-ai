@@ -31,16 +31,32 @@ class FailoverProvider implements LLMProvider {
                 return await provider.chat(messages, tools);
             } catch (error: any) {
                 lastError = error;
-                // If it's a rate limit (429) or a temporary service error (500/503/etc)
-                // we try the next provider in the chain.
-                const isRateLimit = error.status === 429 || error.message?.includes("429") || error.isRateLimit;
-                const isServiceError = error.status >= 500 || error.message?.includes("500");
 
-                if (isRateLimit || isServiceError) {
-                    logger.warn(`⚠️ ${provider.name} failed (${error.status || 'Error'}). Trying next provider...`);
+                // Special case: Groq's tool_use_failed bug (happens with accented Spanish chars).
+                // Retry the SAME provider without tools so the user gets a text response.
+                if (error.isToolUseFailed && tools && tools.length > 0) {
+                    logger.warn(`⚠️ ${provider.name} tool_use_failed — retrying without tools...`);
+                    try {
+                        return await provider.chat(messages, undefined);
+                    } catch (retryError: any) {
+                        lastError = retryError;
+                        logger.warn(`⚠️ ${provider.name} retry also failed. Trying next provider...`);
+                        continue;
+                    }
+                }
+
+                // If it's a rate limit (429), a temporary service error (500/503/etc),
+                // OR a bad request (400) — we try the next provider in the chain.
+                const status = error.statusCode || error.status || 0;
+                const isRateLimit = status === 429 || error.message?.includes("429") || error.isRateLimit;
+                const isServiceError = status >= 500 || error.message?.includes("500");
+                const isBadRequest = status === 400 || error.message?.includes("400");
+
+                if (isRateLimit || isServiceError || isBadRequest) {
+                    logger.warn(`⚠️ ${provider.name} failed (${status || 'Error'}). Trying next provider...`);
                     continue;
                 }
-                // If it's a validation error (400) or something else, we might want to fail fast
+                // For auth errors (401, 403) fail fast
                 throw error;
             }
         }
