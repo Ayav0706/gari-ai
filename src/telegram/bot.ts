@@ -22,6 +22,24 @@ import type { ToolRegistry } from "../tools/registry.js";
 import { InputFile } from "grammy";
 
 /**
+ * Send a reply safely: try Markdown first, fall back to plain text if Telegram rejects the formatting.
+ * This prevents silent failures when the LLM returns malformed Markdown.
+ */
+async function safeReply(ctx: any, text: string): Promise<void> {
+    try {
+        await ctx.reply(text, { parse_mode: "Markdown" });
+    } catch (markdownError: any) {
+        // Telegram rejects malformed Markdown with 400. Retry as plain text.
+        if (markdownError?.description?.includes("can't parse") || markdownError?.error_code === 400) {
+            logger.warn("Markdown parse failed, sending as plain text.");
+            await ctx.reply(text);
+        } else {
+            throw markdownError;
+        }
+    }
+}
+
+/**
  * Create and configure the Telegram bot.
  * Returns the bot instance ready to start.
  */
@@ -156,7 +174,7 @@ export function createBot(llm: LLMProvider, toolRegistry: ToolRegistry): Bot {
         const userId = ctx.from.id;
         const userMessage = ctx.message.text;
 
-        logger.info(`💬 Message from ${userId}: ${userMessage.slice(0, 100)}...`);
+        logger.info(`💬 Message from ${userId}: ${userMessage.slice(0, 100)}${userMessage.length > 100 ? '...' : ''}`);
 
         // Show typing indicator while processing
         await ctx.replyWithChatAction("typing");
@@ -177,10 +195,10 @@ export function createBot(llm: LLMProvider, toolRegistry: ToolRegistry): Bot {
             if (reply.length > 4000) {
                 const chunks = splitMessage(reply, 4000);
                 for (const chunk of chunks) {
-                    await ctx.reply(chunk, { parse_mode: "Markdown" });
+                    await safeReply(ctx, chunk);
                 }
             } else {
-                await ctx.reply(reply, { parse_mode: "Markdown" });
+                await safeReply(ctx, reply);
             }
         } catch (error) {
             const errMsg = error instanceof Error ? error.message : String(error);
@@ -239,17 +257,17 @@ export function createBot(llm: LLMProvider, toolRegistry: ToolRegistry): Bot {
                     if (audioBuffer) {
                         await ctx.replyWithVoice(new InputFile(audioBuffer, "response.mp3"));
                         // Also send text for reference
-                        await ctx.reply(reply, { parse_mode: "Markdown" });
+                        await safeReply(ctx, reply);
                     } else {
-                        await ctx.reply(reply, { parse_mode: "Markdown" });
+                        await safeReply(ctx, reply);
                     }
                 } else if (reply.length > 4000) {
                     const chunks = splitMessage(reply, 4000);
                     for (const chunk of chunks) {
-                        await ctx.reply(chunk, { parse_mode: "Markdown" });
+                        await safeReply(ctx, chunk);
                     }
                 } else {
-                    await ctx.reply(reply, { parse_mode: "Markdown" });
+                    await safeReply(ctx, reply);
                 }
             } finally {
                 clearInterval(typingInterval);
@@ -269,6 +287,7 @@ export function createBot(llm: LLMProvider, toolRegistry: ToolRegistry): Bot {
 
     return bot;
 }
+
 
 /**
  * Split a long message into chunks, trying to break at newlines.
