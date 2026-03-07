@@ -42,8 +42,17 @@ export class GroqProvider implements LLMProvider {
 
         if (!res.ok) {
             const errorText = await res.text();
-            logger.error(`Groq API error (${res.status}):`, { error: errorText });
-            throw new GroqError(`Groq API returned ${res.status}`, res.status);
+            logger.error(`Groq API error (${res.status}): ${errorText}`);
+            // Detect the specific tool_use_failed error (Groq bug with non-ASCII content)
+            let isToolFail = false;
+            try {
+                const parsed = JSON.parse(errorText);
+                isToolFail = parsed?.error?.code === "tool_use_failed";
+            } catch (e) {
+                isToolFail = errorText.includes("tool_use_failed");
+            }
+            const err = new GroqError(`Groq API returned ${res.status}: ${errorText}`, res.status, isToolFail);
+            throw err;
         }
 
         const data = await res.json() as GroqRawResponse;
@@ -127,7 +136,8 @@ export class GroqProvider implements LLMProvider {
 export class GroqError extends Error {
     constructor(
         message: string,
-        public readonly statusCode: number
+        public readonly statusCode: number,
+        public readonly isToolUseFailed: boolean = false
     ) {
         super(message);
         this.name = "GroqError";
