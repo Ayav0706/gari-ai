@@ -21,6 +21,7 @@ import { generateImageTool } from "./tools/generate-image.js";
 import { deepResearchTool } from "./tools/deep-research.js";
 import { remindersTool, setReminderCallback } from "./tools/reminders.js";
 import { createBot } from "./telegram/bot.js";
+import { executeShellCommandTool, readFileTool, writeFileTool, restartTool } from "./tools/system.js";
 
 async function main(): Promise<void> {
     logger.info("🚀 Starting Gari...");
@@ -41,6 +42,10 @@ async function main(): Promise<void> {
     toolRegistry.register(generateImageTool);
     toolRegistry.register(deepResearchTool);
     toolRegistry.register(remindersTool);
+    toolRegistry.register(executeShellCommandTool);
+    toolRegistry.register(readFileTool);
+    toolRegistry.register(writeFileTool);
+    toolRegistry.register(restartTool);
     logger.info(`🔧 ${toolRegistry.size} tool(s) registered: ${toolRegistry.listNames().join(", ")}`);
 
     // 3. LLM Provider
