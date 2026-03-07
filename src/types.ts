@@ -32,6 +32,12 @@ export interface LLMResponse {
     };
 }
 
+export interface LLMStreamChunk {
+    content?: string;
+    tool_calls?: LLMToolCall[];
+    finish_reason?: "stop" | "tool_calls" | "length" | "error";
+}
+
 export interface LLMProvider {
     /**
      * Send a chat completion request to the LLM.
@@ -40,6 +46,14 @@ export interface LLMProvider {
      * @returns The LLM's response
      */
     chat(messages: LLMMessage[], tools?: ToolSchema[]): Promise<LLMResponse>;
+
+    /**
+     * Stream a chat completion request.
+     * @param messages - Conversation history
+     * @param tools - Available tools for function calling
+     * @returns An async generator of stream chunks
+     */
+    streamChat?(messages: LLMMessage[], tools?: ToolSchema[]): AsyncGenerator<LLMStreamChunk, void, unknown>;
 
     /** Optional: Transcribe audio to text. */
     transcribeAudio?(audioBuffer: Uint8Array, filename: string): Promise<string>;
