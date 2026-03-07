@@ -21,7 +21,7 @@ export const getTimeTool: ToolDefinition = {
                 default: "local",
             },
         },
-        required: [],
+        // No required params - timezone is optional
     },
 
     execute: async (args: Record<string, unknown>): Promise<string> => {
