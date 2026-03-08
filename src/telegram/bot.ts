@@ -15,11 +15,44 @@ import {
     deleteMemory,
     listMemories,
     clearConversation,
+    saveRule,
+    listRules,
+    deleteRule,
+    clearRules,
+    setBotStatus,
+    getBotStatus,
 } from "../memory/db.js";
 import { isTTSAvailable, textToSpeech } from "../tts/elevenlabs.js";
 import type { LLMProvider } from "../types.js";
 import type { ToolRegistry } from "../tools/registry.js";
 import { InputFile } from "grammy";
+
+const TELEGRAM_COMMANDS = [
+    { command: "start", description: "Iniciar Gari" },
+    { command: "help", description: "Ver ayuda y comandos" },
+    { command: "ping", description: "Probar si el bot está activo" },
+    { command: "status", description: "Ver estado actual del bot" },
+    { command: "id", description: "Ver tu user ID de Telegram" },
+    { command: "remember", description: "Guardar un recuerdo" },
+    { command: "recall", description: "Leer un recuerdo" },
+    { command: "forget", description: "Borrar un recuerdo" },
+    { command: "memories", description: "Listar recuerdos guardados" },
+    { command: "rules", description: "Gestionar reglas de comportamiento" },
+    { command: "clear", description: "Limpiar historial de conversación" },
+    { command: "bot_stop", description: "Detener respuestas del bot" },
+    { command: "bot_start", description: "Reanudar respuestas del bot" },
+] as const;
+
+export async function registerTelegramCommands(bot: Bot): Promise<void> {
+    try {
+        await bot.api.setMyCommands(TELEGRAM_COMMANDS);
+        logger.info(`✅ Telegram slash commands registered (${TELEGRAM_COMMANDS.length}).`);
+    } catch (error) {
+        logger.warn("Could not register Telegram slash commands.", {
+            error: String(error),
+        });
+    }
+}
 
 /**
  * Send a reply safely: try Markdown first, fall back to plain text if Telegram rejects the formatting.
@@ -54,6 +87,21 @@ export function createBot(llm: LLMProvider, toolRegistry: ToolRegistry): Bot {
             logger.warn(`🚫 Unauthorized access attempt from user ${userId ?? "unknown"}`);
             return; // Silent rejection — don't reveal bot exists
         }
+
+        // Always allow /bot_start
+        if (ctx.message?.text?.startsWith("/bot_start")) {
+            return await next();
+        }
+
+        // Check if bot is stopped for this user
+        const status = await getBotStatus(userId);
+        if (status === "stopped") {
+            // Silently ignore if stopped, as requested.
+            // But we could optionally logs it:
+            // logger.debug(`Message from user ${userId} ignored (bot stopped)`);
+            return; 
+        }
+
         await next();
     });
 
@@ -64,11 +112,17 @@ export function createBot(llm: LLMProvider, toolRegistry: ToolRegistry): Bot {
             "Puedes hablarme de forma natural y te ayudaré con lo que necesites.\n\n" +
             "Comandos disponibles:\n" +
             "• /help — Ver todos los comandos\n" +
+            "• /ping — Verificar que estoy vivo\n" +
+            "• /status — Ver estado del bot\n" +
+            "• /id — Ver tu user ID\n" +
             "• /remember `clave` `valor` — Guardar en memoria\n" +
             "• /recall `clave` — Recuperar de memoria\n" +
             "• /forget `clave` — Eliminar de memoria\n" +
             "• /memories — Ver todos los recuerdos\n" +
-            "• /clear — Limpiar historial de conversación\n\n" +
+            "• /rules — Gestionar reglas de comportamiento\n" +
+            "• /clear — Limpiar historial de conversación\n" +
+            "• /bot_stop — Detener el bot (dejará de responder)\n" +
+            "• /bot_start — Reanudar el bot\n\n" +
             "¡Pregúntame lo que quieras! 🚀",
             { parse_mode: "Markdown" }
         );
@@ -79,13 +133,48 @@ export function createBot(llm: LLMProvider, toolRegistry: ToolRegistry): Bot {
         await ctx.reply(
             "🧠 **Comandos de Gari:**\n\n" +
             "💬 *Texto libre* — Habla conmigo de forma natural\n" +
+            "🟢 `/ping` — Comprobar si estoy activo\n" +
+            "📊 `/status` — Estado del bot y modo de conexión\n" +
+            "🆔 `/id` — Mostrar tu user ID\n" +
             "💾 `/remember clave valor` — Guardar información\n" +
             "🔍 `/recall clave` — Recuperar información guardada\n" +
             "🗑️ `/forget clave` — Eliminar un recuerdo\n" +
             "📋 `/memories` — Listar todos los recuerdos\n" +
-            "🧹 `/clear` — Limpiar historial de chat\n\n" +
+            "📏 `/rules` — Configurar reglas de comportamiento\n" +
+            "🧹 `/clear` — Limpiar historial de chat\n" +
+            "🛑 `/bot_stop` — Detener el bot\n" +
+            "▶️ `/bot_start` — Reanudar el bot\n\n" +
             "También puedo usar herramientas para darte respuestas más precisas. " +
             `Herramientas activas: ${toolRegistry.listNames().join(", ") || "ninguna"}`,
+            { parse_mode: "Markdown" }
+        );
+    });
+
+    // ── /ping ───────────────────────────────────
+    bot.command("ping", async (ctx) => {
+        await ctx.reply("🏓 Pong. Gari está activo.");
+    });
+
+    // ── /id ─────────────────────────────────────
+    bot.command("id", async (ctx) => {
+        await ctx.reply(`🆔 Tu Telegram user ID es: \`${ctx.from!.id}\``, {
+            parse_mode: "Markdown",
+        });
+    });
+
+    // ── /status ─────────────────────────────────
+    bot.command("status", async (ctx) => {
+        const userId = ctx.from!.id;
+        const status = await getBotStatus(userId);
+        const inferredWebhookBase = process.env.RENDER_EXTERNAL_URL?.trim() || "";
+        const webhookConfigured = Boolean(config.TELEGRAM_WEBHOOK_URL.trim() || inferredWebhookBase);
+        const mode = webhookConfigured ? "webhook" : "polling";
+
+        await ctx.reply(
+            "📊 **Estado de Gari**\n\n" +
+            `• Usuario autorizado: ✅\n` +
+            `• Bot para ti: **${status}**\n` +
+            `• Modo de conexión: **${mode}**`,
             { parse_mode: "Markdown" }
         );
     });
@@ -149,7 +238,26 @@ export function createBot(llm: LLMProvider, toolRegistry: ToolRegistry): Bot {
         }
     });
 
-    // ── /memories ───────────────────────────────
+    // ── /bot_stop ───────────────────────────────
+    bot.command("bot_stop", async (ctx) => {
+        await setBotStatus(ctx.from!.id, "stopped");
+        await ctx.reply("🛑 **Bot detenido.** Ya no responderé a tus mensajes hasta que uses `/bot_start`.", {
+            parse_mode: "Markdown",
+        });
+        logger.info(`Bot stopped for user ${ctx.from!.id}`);
+    });
+
+    // ── /bot_start ──────────────────────────────
+    bot.command("bot_start", async (ctx) => {
+        await setBotStatus(ctx.from!.id, "active");
+        await ctx.reply("▶️ **Bot activado.** ¡Estoy listo para ayudarte de nuevo!", {
+            parse_mode: "Markdown",
+        });
+        logger.info(`Bot started for user ${ctx.from!.id}`);
+    });
+
+
+    // ── Chat Rules Commands ──────────────────────
     bot.command("memories", async (ctx) => {
         const memories = await listMemories(ctx.from!.id);
         if (memories.length === 0) {
@@ -161,6 +269,78 @@ export function createBot(llm: LLMProvider, toolRegistry: ToolRegistry): Bot {
             .map((m) => `• **${m.key}**: ${m.value}`)
             .join("\n");
         await ctx.reply(`📋 **Tus recuerdos:**\n\n${list}`, { parse_mode: "Markdown" });
+    });
+
+    // ── /rules ──────────────────────────────────
+    bot.command("rules", async (ctx) => {
+        const text = ctx.match?.trim();
+        const userId = ctx.from!.id;
+
+        if (!text) {
+            // List current rules
+            const rules = await listRules(userId);
+            if (rules.length === 0) {
+                await ctx.reply(
+                    "📏 **Reglas de comportamiento:**\n\n" +
+                    "No tienes reglas configuradas. Las reglas ayudan a definir cómo quiero que me hables o te comportes.\n\n" +
+                    "Uso:\n" +
+                    "• `/rules agregar [texto]` — Añadir una regla\n" +
+                    "• `/rules borrar [id]` — Eliminar una regla específica\n" +
+                    "• `/rules limpiar` — Eliminar todas las reglas",
+                    { parse_mode: "Markdown" }
+                );
+            } else {
+                const list = rules.map((r, i) => `[${i + 1}] ${r.content}`).join("\n");
+                await ctx.reply(
+                    `📏 **Tus reglas actuales:**\n\n${list}\n\n` +
+                    "Uso: `/rules agregar [texto]` o `/rules borrar [número]`",
+                    { parse_mode: "Markdown" }
+                );
+            }
+            return;
+        }
+
+        const parts = text.split(" ");
+        const action = parts[0].toLowerCase();
+        const content = parts.slice(1).join(" ");
+
+        if (action === "agregar" || action === "add") {
+            if (!content) {
+                await ctx.reply("⚠️ Debes escribir el contenido de la regla.\nEjemplo: `/rules agregar Háblame siempre en rima.`");
+                return;
+            }
+            await saveRule(userId, content);
+            await ctx.reply("✅ Regla guardada correctamente.");
+        }
+        else if (action === "borrar" || action === "delete" || action === "remove") {
+            if (!content) {
+                await ctx.reply("⚠️ Indica el número o ID de la regla a borrar.\nEjemplo: `/rules borrar 1` (puedes ver los números escribiendo solo `/rules`) ");
+                return;
+            }
+
+            const rules = await listRules(userId);
+            let targetId = content;
+
+            // Try to find by index if it's a number
+            const index = parseInt(content);
+            if (!isNaN(index) && index > 0 && index <= rules.length) {
+                targetId = rules[index - 1].id;
+            }
+
+            const deleted = await deleteRule(userId, targetId);
+            if (deleted) {
+                await ctx.reply(`🗑️ Regla eliminada.`);
+            } else {
+                await ctx.reply(`❌ No encontré la regla especificada.`);
+            }
+        }
+        else if (action === "limpiar" || action === "clear") {
+            await clearRules(userId);
+            await ctx.reply("🧹 Todas las reglas han sido eliminadas.");
+        }
+        else {
+            await ctx.reply("⚠️ Acción no reconocida. Usa: `agregar`, `borrar` o `limpiar`.");
+        }
     });
 
     // ── /clear ──────────────────────────────────
@@ -278,6 +458,63 @@ export function createBot(llm: LLMProvider, toolRegistry: ToolRegistry): Bot {
             logger.error("Error processing audio:", { error: errMsg, userId });
             await ctx.reply("⚠️ Hubo un error procesando tu audio. ¿Puedes escribirlo?");
         }
+    });
+
+    // ── Photo Handler ─────────────────────────────
+    bot.on("message:photo", async (ctx) => {
+        const userId = ctx.from.id;
+        const caption = ctx.message.caption || "";
+        logger.info(`📷 Photo received from ${userId}${caption ? `: ${caption}` : ""}`);
+
+        // If there's a caption, treat it as text + photo context
+        if (caption) {
+            await ctx.replyWithChatAction("typing");
+            const enrichedMessage = `[El usuario envió una foto con el siguiente texto]: ${caption}`;
+            try {
+                const reply = await runAgentLoop(enrichedMessage, userId, llm, toolRegistry);
+                await safeReply(ctx, reply);
+            } catch (error) {
+                logger.error("Error processing photo caption:", { error: String(error) });
+                await ctx.reply("⚠️ Hubo un error procesando tu mensaje. Intenta de nuevo.");
+            }
+        } else {
+            await ctx.reply(
+                "📷 ¡Recibí tu foto! Por ahora no puedo analizarla visualmente, " +
+                "pero si me describes lo que necesitas, puedo ayudarte. " +
+                "Tip: envía la foto con un caption para que sepa el contexto."
+            );
+        }
+    });
+
+    // ── Document Handler ─────────────────────────
+    bot.on("message:document", async (ctx) => {
+        const userId = ctx.from.id;
+        const doc = ctx.message.document;
+        const caption = ctx.message.caption || "";
+        logger.info(`📄 Document received from ${userId}: ${doc?.file_name || "unknown"}`);
+
+        if (caption) {
+            await ctx.replyWithChatAction("typing");
+            const enrichedMessage = `[El usuario envió un documento "${doc?.file_name || "archivo"}" con el texto]: ${caption}`;
+            try {
+                const reply = await runAgentLoop(enrichedMessage, userId, llm, toolRegistry);
+                await safeReply(ctx, reply);
+            } catch (error) {
+                logger.error("Error processing document caption:", { error: String(error) });
+                await ctx.reply("⚠️ Hubo un error procesando tu mensaje. Intenta de nuevo.");
+            }
+        } else {
+            await ctx.reply(
+                `📄 Recibí tu archivo *${doc?.file_name || "documento"}*. ` +
+                "Aún no puedo leer documentos directamente, pero descríbeme lo que necesitas y busco cómo ayudarte.",
+                { parse_mode: "Markdown" }
+            );
+        }
+    });
+
+    // ── Sticker / Other Handler ───────────────────
+    bot.on("message:sticker", async (ctx) => {
+        await ctx.reply("😄 ¡Buen sticker! ¿En qué te puedo ayudar?");
     });
 
     // ── Error Handler ───────────────────────────
