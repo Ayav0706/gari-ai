@@ -263,7 +263,6 @@ export async function getRecentMessages(
     const snapshot = await db.collection('users').doc(userId.toString())
         .collection('conversations')
         .orderBy('timestamp', 'desc')
-        .orderBy('order', 'desc')
         .limit(limit)
         .get();
 
