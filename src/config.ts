@@ -19,6 +19,8 @@ const envSchema = z.object({
                 .map((id) => parseInt(id.trim(), 10))
                 .filter((id) => !isNaN(id))
         ),
+    TELEGRAM_WEBHOOK_URL: z.string().default(""),
+    TELEGRAM_WEBHOOK_SECRET: z.string().default(""),
 
     // Groq (primary LLM)
     GROQ_API_KEY: z.string().min(1, "GROQ_API_KEY is required"),
