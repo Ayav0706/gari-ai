@@ -6,6 +6,7 @@
 // Commands: /start, /help, /remember, /recall, /forget, /clear
 
 import { Bot } from "grammy";
+import { randomUUID } from "node:crypto";
 import { config } from "../config.js";
 import { logger } from "../logger.js";
 import { runAgentLoop } from "../agent/loop.js";
@@ -32,6 +33,7 @@ const TELEGRAM_COMMANDS = [
     { command: "help", description: "Ver ayuda y comandos" },
     { command: "ping", description: "Probar si el bot está activo" },
     { command: "status", description: "Ver estado actual del bot" },
+    { command: "health", description: "Diagnóstico rápido del sistema" },
     { command: "id", description: "Ver tu user ID de Telegram" },
     { command: "remember", description: "Guardar un recuerdo" },
     { command: "recall", description: "Leer un recuerdo" },
@@ -42,6 +44,7 @@ const TELEGRAM_COMMANDS = [
     { command: "bot_stop", description: "Detener respuestas del bot" },
     { command: "bot_start", description: "Reanudar respuestas del bot" },
 ] as const;
+const BOOT_TIME = Date.now();
 
 export async function registerTelegramCommands(bot: Bot): Promise<void> {
     try {
@@ -70,6 +73,34 @@ async function safeReply(ctx: any, text: string): Promise<void> {
             throw markdownError;
         }
     }
+}
+
+function createRequestId(): string {
+    return randomUUID().split("-")[0];
+}
+
+function formatUptime(ms: number): string {
+    const totalSec = Math.floor(ms / 1000);
+    const hours = Math.floor(totalSec / 3600);
+    const minutes = Math.floor((totalSec % 3600) / 60);
+    const seconds = totalSec % 60;
+    return `${hours}h ${minutes}m ${seconds}s`;
+}
+
+function buildFriendlyErrorMessage(error: unknown, requestId: string): string {
+    const raw = error instanceof Error ? error.message : String(error);
+    const msg = raw.toLowerCase();
+
+    if (msg.includes("rate limit") || msg.includes("429")) {
+        return `⚠️ Estoy con alta demanda en este momento. Intenta nuevamente en unos segundos.\n\nID: \`${requestId}\``;
+    }
+    if (msg.includes("deadline") || msg.includes("timeout")) {
+        return `⚠️ La solicitud tardó demasiado en procesarse. Prueba con una versión más corta del mensaje.\n\nID: \`${requestId}\``;
+    }
+    if (msg.includes("firestore") || msg.includes("failed_precondition") || msg.includes("index")) {
+        return `⚠️ Hubo un problema temporal con la base de datos. Ya quedó registrado para revisión.\n\nID: \`${requestId}\``;
+    }
+    return `⚠️ Hubo un error procesando tu mensaje. Intenta de nuevo.\n\nID: \`${requestId}\``;
 }
 
 /**
@@ -114,6 +145,7 @@ export function createBot(llm: LLMProvider, toolRegistry: ToolRegistry): Bot {
             "• /help — Ver todos los comandos\n" +
             "• /ping — Verificar que estoy vivo\n" +
             "• /status — Ver estado del bot\n" +
+            "• /health — Diagnóstico rápido\n" +
             "• /id — Ver tu user ID\n" +
             "• /remember `clave` `valor` — Guardar en memoria\n" +
             "• /recall `clave` — Recuperar de memoria\n" +
@@ -135,6 +167,7 @@ export function createBot(llm: LLMProvider, toolRegistry: ToolRegistry): Bot {
             "💬 *Texto libre* — Habla conmigo de forma natural\n" +
             "🟢 `/ping` — Comprobar si estoy activo\n" +
             "📊 `/status` — Estado del bot y modo de conexión\n" +
+            "🩺 `/health` — Diagnóstico de salud del sistema\n" +
             "🆔 `/id` — Mostrar tu user ID\n" +
             "💾 `/remember clave valor` — Guardar información\n" +
             "🔍 `/recall clave` — Recuperar información guardada\n" +
@@ -175,6 +208,40 @@ export function createBot(llm: LLMProvider, toolRegistry: ToolRegistry): Bot {
             `• Usuario autorizado: ✅\n` +
             `• Bot para ti: **${status}**\n` +
             `• Modo de conexión: **${mode}**`,
+            { parse_mode: "Markdown" }
+        );
+    });
+
+    // ── /health ────────────────────────────────
+    bot.command("health", async (ctx) => {
+        const checkId = createRequestId();
+        const started = Date.now();
+        const userId = ctx.from!.id;
+        const inferredWebhookBase = process.env.RENDER_EXTERNAL_URL?.trim() || "";
+        const webhookConfigured = Boolean(config.TELEGRAM_WEBHOOK_URL.trim() || inferredWebhookBase);
+        const mode = webhookConfigured ? "webhook" : "polling";
+        let dbOk = true;
+
+        try {
+            await getBotStatus(userId);
+        } catch (error) {
+            dbOk = false;
+            logger.error("Health DB check failed", {
+                requestId: checkId,
+                userId,
+                error: error instanceof Error ? error.message : String(error),
+            });
+        }
+
+        const duration = Date.now() - started;
+        await ctx.reply(
+            "🩺 **Health Check**\n\n" +
+            `• Conexión bot: ✅\n` +
+            `• Base de datos: ${dbOk ? "✅" : "❌"}\n` +
+            `• Modo: **${mode}**\n` +
+            `• Uptime: **${formatUptime(Date.now() - BOOT_TIME)}**\n` +
+            `• Latencia check: **${duration} ms**\n` +
+            `• Check ID: \`${checkId}\``,
             { parse_mode: "Markdown" }
         );
     });
@@ -353,8 +420,15 @@ export function createBot(llm: LLMProvider, toolRegistry: ToolRegistry): Bot {
     bot.on("message:text", async (ctx) => {
         const userId = ctx.from.id;
         const userMessage = ctx.message.text;
+        const requestId = createRequestId();
+        const startedAt = Date.now();
 
-        logger.info(`💬 Message from ${userId}: ${userMessage.slice(0, 100)}${userMessage.length > 100 ? '...' : ''}`);
+        logger.info(`💬 Message from ${userId}: ${userMessage.slice(0, 100)}${userMessage.length > 100 ? '...' : ''}`, {
+            requestId,
+            userId,
+            messageLength: userMessage.length,
+            chatId: ctx.chat?.id,
+        });
 
         // Show typing indicator while processing
         await ctx.replyWithChatAction("typing");
@@ -382,10 +456,15 @@ export function createBot(llm: LLMProvider, toolRegistry: ToolRegistry): Bot {
             }
         } catch (error) {
             const errMsg = error instanceof Error ? error.message : String(error);
-            logger.error("Error in agent loop:", { error: errMsg, userId });
-            await ctx.reply("⚠️ Hubo un error procesando tu mensaje. Intenta de nuevo.");
+            logger.error("Error in agent loop:", { requestId, error: errMsg, userId });
+            await safeReply(ctx, buildFriendlyErrorMessage(error, requestId));
         } finally {
             clearInterval(typingInterval);
+            logger.info("Message processing completed", {
+                requestId,
+                userId,
+                durationMs: Date.now() - startedAt,
+            });
         }
     });
 
