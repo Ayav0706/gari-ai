@@ -1,0 +1,19 @@
+[36m[2026-03-07T03:22:46.186Z] [INFO][0m ­ƒöº Building and testing tools functionality...
+[36m[2026-03-07T03:22:46.189Z] [INFO][0m ­ƒöº Tool registered: get_current_time
+[36m[2026-03-07T03:22:46.189Z] [INFO][0m ­ƒöº Tool registered: execute_shell_command
+[36m[2026-03-07T03:22:46.189Z] [INFO][0m ­ƒöº Tool registered: read_file
+[36m[2026-03-07T03:22:46.189Z] [INFO][0m Ô£à Registered tools: get_current_time, execute_shell_command, read_file
+[36m[2026-03-07T03:22:46.189Z] [INFO][0m 
+­ƒº¬ Testing get_current_time...
+[36m[2026-03-07T03:22:46.233Z] [INFO][0m Result: {"datetime":"s├íbado, 7 de marzo de 2026, 3:22:46 UTC","timezone":"UTC","iso":"2026-03-07T03:22:46.189Z","timestamp":1772853766189}
+[36m[2026-03-07T03:22:46.233Z] [INFO][0m 
+­ƒº¬ Testing execute_shell_command (echo test)...
+[36m[2026-03-07T03:22:46.234Z] [INFO][0m Running shell command: echo Hello from testTools
+[36m[2026-03-07T03:22:46.290Z] [INFO][0m Result: STDOUT:
+Hello from testTools
+
+
+STDERR:
+
+[36m[2026-03-07T03:22:46.290Z] [INFO][0m 
+­ƒÄë All tests passed successfully!
