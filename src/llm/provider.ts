@@ -6,7 +6,7 @@
 
 import { config } from "../config.js";
 import { logger } from "../logger.js";
-import { GroqProvider, GroqError } from "./groq.js";
+import { GroqProvider } from "./groq.js";
 import { OpenRouterProvider } from "./openrouter.js";
 import { KimiProvider } from "./kimi.js";
 import type { LLMMessage, LLMProvider, LLMResponse, ToolSchema } from "../types.js";
@@ -18,6 +18,17 @@ import type { LLMMessage, LLMProvider, LLMResponse, ToolSchema } from "../types.
 class FailoverProvider implements LLMProvider {
     readonly name = "FailoverChain";
     private providers: LLMProvider[];
+    private readonly providerCooldowns = new Map<string, number>();
+    private readonly providerFailures = new Map<string, number>();
+    private readonly incidents: Array<{
+        ts: string;
+        provider: string;
+        category: string;
+        status: number;
+        action: string;
+        detail: string;
+    }> = [];
+    private readonly MAX_INCIDENTS = 80;
 
     constructor(providers: LLMProvider[]) {
         this.providers = providers.filter(p => p !== null);
@@ -28,68 +39,217 @@ class FailoverProvider implements LLMProvider {
         return new Promise(resolve => setTimeout(resolve, ms));
     }
 
+    private getErrorStatus(error: any): number {
+        return error?.statusCode || error?.status || 0;
+    }
+
+    private classifyError(error: any): "rate_limit" | "auth" | "service" | "bad_request" | "tool_use_failed" | "unknown" {
+        const status = this.getErrorStatus(error);
+        const message = String(error?.message || "").toLowerCase();
+        if (error?.isToolUseFailed || message.includes("tool_use_failed")) return "tool_use_failed";
+        if (status === 429 || message.includes("429") || error?.isRateLimit) return "rate_limit";
+        if (status === 401 || status === 403 || message.includes("401") || message.includes("403")) return "auth";
+        if (status >= 500 || message.includes("500") || message.includes("503")) return "service";
+        if (status === 400 || message.includes("400") || message.includes("invalid_request")) return "bad_request";
+        return "unknown";
+    }
+
+    private setCooldown(providerName: string, ms: number): void {
+        const until = Date.now() + ms;
+        this.providerCooldowns.set(providerName, until);
+    }
+
+    private isCoolingDown(providerName: string): boolean {
+        const until = this.providerCooldowns.get(providerName) ?? 0;
+        return until > Date.now();
+    }
+
+    private recordIncident(
+        provider: string,
+        category: string,
+        status: number,
+        action: string,
+        detail: string
+    ): void {
+        this.incidents.push({
+            ts: new Date().toISOString(),
+            provider,
+            category,
+            status,
+            action,
+            detail: detail.slice(0, 260),
+        });
+        if (this.incidents.length > this.MAX_INCIDENTS) {
+            this.incidents.shift();
+        }
+        logger.warn("🛠️ Self-heal incident", {
+            provider,
+            category,
+            status,
+            action,
+            detail: detail.slice(0, 140),
+        });
+    }
+
     async chat(messages: LLMMessage[], tools?: ToolSchema[]): Promise<LLMResponse> {
         let lastError: any = null;
 
         for (let i = 0; i < this.providers.length; i++) {
             const provider = this.providers[i];
+            if (this.isCoolingDown(provider.name)) {
+                continue;
+            }
+
             const maxAttempts = provider.name === "Groq" ? 3 : 1;
             let attempt = 0;
 
             while (attempt < maxAttempts) {
                 attempt++;
-            try {
-                return await provider.chat(messages, tools);
-            } catch (error: any) {
-                lastError = error;
+                try {
+                    return await provider.chat(messages, tools);
+                } catch (error: any) {
+                    lastError = error;
+                    const status = this.getErrorStatus(error);
+                    const category = this.classifyError(error);
+                    const failCount = (this.providerFailures.get(provider.name) ?? 0) + 1;
+                    this.providerFailures.set(provider.name, failCount);
 
-                // Special case: Groq's tool_use_failed bug (happens with accented Spanish chars).
-                // Retry the SAME provider without tools so the user gets a text response.
-                if (error.isToolUseFailed && tools && tools.length > 0) {
-                    logger.warn(`⚠️ ${provider.name} tool_use_failed — retrying without tools...`);
-                    try {
-                        return await provider.chat(messages, undefined);
-                    } catch (retryError: any) {
-                        lastError = retryError;
-                        logger.warn(`⚠️ ${provider.name} retry also failed. Trying next provider...`);
-                        continue;
+                    // If tool-calling degrades, retry same provider without tools.
+                    if ((category === "tool_use_failed" || category === "bad_request") && tools && tools.length > 0) {
+                        this.recordIncident(
+                            provider.name,
+                            category,
+                            status,
+                            "retry_without_tools",
+                            String(error?.message || "tool call failed")
+                        );
+                        try {
+                            return await provider.chat(messages, undefined);
+                        } catch (retryError: any) {
+                            lastError = retryError;
+                            this.recordIncident(
+                                provider.name,
+                                this.classifyError(retryError),
+                                this.getErrorStatus(retryError),
+                                "fallback_next_provider",
+                                String(retryError?.message || "retry without tools failed")
+                            );
+                            break;
+                        }
                     }
-                }
 
-                // If it's a rate limit (429), a temporary service error (500/503/etc),
-                // OR a bad request (400) — we try the next provider in the chain.
-                const status = error.statusCode || error.status || 0;
-                const isRateLimit = status === 429 || error.message?.includes("429") || error.isRateLimit;
-                const isServiceError = status >= 500 || error.message?.includes("500");
-                const isBadRequest = status === 400 || error.message?.includes("400");
-                const isAuthError = status === 401 || status === 403 || error.message?.includes("401") || error.message?.includes("403");
-
-                if (isRateLimit || isServiceError || isBadRequest) {
-                    // Backoff: wait before trying next provider (longer for rate limits)
-                    if (isRateLimit && attempt < maxAttempts) {
-                        const retryDelay = 1500 * attempt;
-                        logger.warn(`⚠️ ${provider.name} rate-limited (${status || "429"}). Retry ${attempt}/${maxAttempts} in ${retryDelay}ms...`);
-                        await this.sleep(retryDelay);
-                        continue;
+                    if (category === "rate_limit") {
+                        if (attempt < maxAttempts) {
+                            const retryDelay = 1200 * attempt;
+                            this.recordIncident(
+                                provider.name,
+                                category,
+                                status,
+                                `retry_same_provider_${attempt}`,
+                                String(error?.message || "rate limit")
+                            );
+                            await this.sleep(retryDelay);
+                            continue;
+                        }
+                        this.setCooldown(provider.name, 30_000);
+                        this.recordIncident(
+                            provider.name,
+                            category,
+                            status,
+                            "cooldown_30s_fallback_next_provider",
+                            String(error?.message || "rate limit")
+                        );
+                        break;
                     }
-                    const delay = isRateLimit ? 2000 : 1000;
-                    logger.warn(`⚠️ ${provider.name} failed (${status || "Error"}). Waiting ${delay}ms before next provider...`);
-                    await this.sleep(delay);
-                    break;
-                }
 
-                // Auth errors should not kill the full chain; skip to next provider.
-                if (isAuthError) {
-                    logger.warn(`⚠️ ${provider.name} auth failed (${status || "auth error"}). Skipping provider.`);
-                    break;
-                }
+                    if (category === "auth") {
+                        this.setCooldown(provider.name, 10 * 60_000);
+                        this.recordIncident(
+                            provider.name,
+                            category,
+                            status,
+                            "disable_provider_10m_fallback_next_provider",
+                            String(error?.message || "auth error")
+                        );
+                        break;
+                    }
 
-                // Unknown errors: keep existing behavior (fail fast).
-                throw error;
-            }
+                    if (category === "service") {
+                        this.setCooldown(provider.name, 60_000);
+                        this.recordIncident(
+                            provider.name,
+                            category,
+                            status,
+                            "cooldown_60s_fallback_next_provider",
+                            String(error?.message || "service error")
+                        );
+                        break;
+                    }
+
+                    if (category === "bad_request") {
+                        this.recordIncident(
+                            provider.name,
+                            category,
+                            status,
+                            "fallback_next_provider",
+                            String(error?.message || "bad request")
+                        );
+                        break;
+                    }
+
+                    // Unknown errors keep fail-fast behavior to avoid hiding critical bugs.
+                    this.recordIncident(
+                        provider.name,
+                        category,
+                        status,
+                        "fail_fast",
+                        String(error?.message || "unknown error")
+                    );
+                    throw error;
+                }
             }
         }
+
+        // Last-resort degradation: if tools were enabled, retry once without tools on the whole chain.
+        if (tools && tools.length > 0) {
+            try {
+                this.recordIncident(
+                    "FailoverChain",
+                    "unknown",
+                    this.getErrorStatus(lastError),
+                    "global_retry_without_tools",
+                    "all providers failed with tools"
+                );
+                return await this.chat(messages, undefined);
+            } catch {
+                // Continue to throw original error below.
+            }
+        }
+
         throw lastError;
+    }
+
+    getSelfHealStatus(): {
+        providerCooldowns: Record<string, number>;
+        providerFailures: Record<string, number>;
+        recentIncidents: Array<{ ts: string; provider: string; category: string; status: number; action: string; detail: string }>;
+    } {
+        const now = Date.now();
+        const cooldowns: Record<string, number> = {};
+        for (const [provider, until] of this.providerCooldowns.entries()) {
+            if (until > now) {
+                cooldowns[provider] = until - now;
+            }
+        }
+        const failures: Record<string, number> = {};
+        for (const [provider, count] of this.providerFailures.entries()) {
+            failures[provider] = count;
+        }
+        return {
+            providerCooldowns: cooldowns,
+            providerFailures: failures,
+            recentIncidents: this.incidents.slice(-10),
+        };
     }
 
     async transcribeAudio(audioBuffer: Uint8Array, filename: string): Promise<string> {
