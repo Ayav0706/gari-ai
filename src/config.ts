@@ -34,6 +34,10 @@ const envSchema = z.object({
 
     // Kimi (another LLM option)
     KIMI_API_KEY: z.string().default(""),
+    CRITIC_PASS_ENABLED: z
+        .string()
+        .default("true")
+        .transform((v) => v.trim().toLowerCase() !== "false"),
 
     // Database
     DB_PATH: z.string().default("./data/memory.db"),
