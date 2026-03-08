@@ -23,6 +23,7 @@ import { remindersTool, setReminderCallback } from "./tools/reminders.js";
 import { createBot, registerTelegramCommands } from "./telegram/bot.js";
 import { saveUserFactTool } from "./tools/save-user-fact.js";
 import { executeShellCommandTool, readFileTool, writeFileTool, restartTool } from "./tools/system.js";
+import { chartTool } from "./tools/chart.js";
 import { webhookCallback } from "grammy";
 import { createServer } from "node:http";
 
@@ -50,6 +51,7 @@ async function main(): Promise<void> {
     toolRegistry.register(readFileTool);
     toolRegistry.register(writeFileTool);
     toolRegistry.register(restartTool);
+    toolRegistry.register(chartTool);
     logger.info(`🔧 ${toolRegistry.size} tool(s) registered: ${toolRegistry.listNames().join(", ")}`);
 
     // 3. LLM Provider
