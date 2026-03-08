@@ -10,6 +10,9 @@ import type { ToolDefinition, ToolSchema } from "../types.js";
 export class ToolRegistry {
     private tools: Map<string, ToolDefinition> = new Map();
 
+    /** Maximum time (ms) a tool can run before being timed out. */
+    private readonly TOOL_TIMEOUT_MS = 30_000;
+
     /**
      * Register a new tool. Throws if a tool with the same name already exists.
      */
@@ -37,9 +40,10 @@ export class ToolRegistry {
 
     /**
      * Execute a tool by name with the given arguments.
-     * Returns the result string, or an error message if the tool fails.
+     * Enforces a timeout to prevent hanging tools from blocking the agent loop.
+     * Returns the result string, or an error message if the tool fails/times out.
      */
-    async execute(name: string, rawArgs: string): Promise<string> {
+    async execute(name: string, rawArgs: string, context?: { userId: number }): Promise<string> {
         const tool = this.tools.get(name);
 
         if (!tool) {
@@ -50,8 +54,16 @@ export class ToolRegistry {
 
         try {
             const args = JSON.parse(rawArgs) as Record<string, unknown>;
-            logger.debug(`Executing tool: ${name}`, { args });
-            const result = await tool.execute(args);
+            logger.debug(`Executing tool: ${name}`, { args, context });
+
+            // Race the tool execution against a timeout
+            const result = await Promise.race([
+                tool.execute(args, context),
+                new Promise<string>((_, reject) =>
+                    setTimeout(() => reject(new Error(`Tool "${name}" timed out after ${this.TOOL_TIMEOUT_MS / 1000}s`)), this.TOOL_TIMEOUT_MS)
+                ),
+            ]);
+
             logger.debug(`Tool result: ${name}`, { result: result.slice(0, 200) });
             return result;
         } catch (error) {
