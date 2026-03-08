@@ -33,6 +33,11 @@ class FailoverProvider implements LLMProvider {
 
         for (let i = 0; i < this.providers.length; i++) {
             const provider = this.providers[i];
+            const maxAttempts = provider.name === "Groq" ? 3 : 1;
+            let attempt = 0;
+
+            while (attempt < maxAttempts) {
+                attempt++;
             try {
                 return await provider.chat(messages, tools);
             } catch (error: any) {
@@ -57,16 +62,31 @@ class FailoverProvider implements LLMProvider {
                 const isRateLimit = status === 429 || error.message?.includes("429") || error.isRateLimit;
                 const isServiceError = status >= 500 || error.message?.includes("500");
                 const isBadRequest = status === 400 || error.message?.includes("400");
+                const isAuthError = status === 401 || status === 403 || error.message?.includes("401") || error.message?.includes("403");
 
                 if (isRateLimit || isServiceError || isBadRequest) {
                     // Backoff: wait before trying next provider (longer for rate limits)
+                    if (isRateLimit && attempt < maxAttempts) {
+                        const retryDelay = 1500 * attempt;
+                        logger.warn(`⚠️ ${provider.name} rate-limited (${status || "429"}). Retry ${attempt}/${maxAttempts} in ${retryDelay}ms...`);
+                        await this.sleep(retryDelay);
+                        continue;
+                    }
                     const delay = isRateLimit ? 2000 : 1000;
-                    logger.warn(`⚠️ ${provider.name} failed (${status || 'Error'}). Waiting ${delay}ms before next provider...`);
+                    logger.warn(`⚠️ ${provider.name} failed (${status || "Error"}). Waiting ${delay}ms before next provider...`);
                     await this.sleep(delay);
-                    continue;
+                    break;
                 }
-                // For auth errors (401, 403) fail fast
+
+                // Auth errors should not kill the full chain; skip to next provider.
+                if (isAuthError) {
+                    logger.warn(`⚠️ ${provider.name} auth failed (${status || "auth error"}). Skipping provider.`);
+                    break;
+                }
+
+                // Unknown errors: keep existing behavior (fail fast).
                 throw error;
+            }
             }
         }
         throw lastError;
