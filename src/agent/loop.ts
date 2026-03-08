@@ -17,6 +17,11 @@ const MAX_ITERATIONS = 10;
 // but we keep our context lean for speed & cost. 6000 tokens ≈ ~24k chars.
 const MAX_CONTEXT_TOKENS = 6000;
 
+type LegacyFunctionCall = {
+    toolName: string;
+    argsJson: string;
+};
+
 /** Rough token estimate: 1 token ≈ 4 chars for English/Spanish mixed text */
 function estimateTokens(text: string | null): number {
     return text ? Math.ceil(text.length / 4) : 0;
@@ -45,6 +50,25 @@ function trimMessages(messages: LLMMessage[], budget: number): LLMMessage[] {
 
     trimmed.push(...rest);
     return trimmed;
+}
+
+function normalizeLegacyToolName(name: string): string {
+    const normalized = name.trim().toLowerCase();
+    if (normalized === "googleworkspace") return "google_workspace";
+    if (normalized === "generatechart") return "generate_chart";
+    return normalized;
+}
+
+function parseLegacyFunctionCall(content: string | null): LegacyFunctionCall | null {
+    if (!content) return null;
+    const match = content.match(/<function>\s*([a-zA-Z0-9_]+)\s*([\s\S]*?)\s*<\/function>/i);
+    if (!match) return null;
+
+    const toolName = normalizeLegacyToolName(match[1]);
+    const argsCandidate = match[2].trim();
+    if (!argsCandidate.startsWith("{") || !argsCandidate.endsWith("}")) return null;
+
+    return { toolName, argsJson: argsCandidate };
 }
 
 const SYSTEM_PROMPT = `Eres **Gari**, un Senior AI Partner proactivo y autónomo. No eres un chatbot pasivo — eres un compañero de ejecución que se anticipa, investiga, y resuelve.
@@ -76,7 +100,7 @@ Antes de responder preguntas complejas, piensa paso a paso internamente:
 5. Si no tienes herramienta específica, busca una ruta web/API y entrégala.
 
 ## Herramientas Disponibles
-search_web, search_wikipedia, google_workspace, manage_coding_skills, get_current_time, read_url, run_code, get_weather, generate_image, deep_research, manage_reminders, execute_shell_command, read_file, write_file.`;
+search_web, search_wikipedia, google_workspace, manage_coding_skills, get_current_time, read_url, run_code, get_weather, generate_image, generate_chart, deep_research, manage_reminders, execute_shell_command, read_file, write_file.`;
 
 /**
  * Build dynamic context string with current time, day, and timezone.
@@ -178,6 +202,49 @@ export async function runAgentLoop(
             }
 
             // Continue the loop so the LLM can process the tool results
+            continue;
+        }
+
+        // Compatibility path: some models return pseudo tool calls in text form:
+        // <function>tool_name{"arg":"value"}</function>
+        const legacyCall = parseLegacyFunctionCall(message.content);
+        if (legacyCall) {
+            logger.warn("Detected legacy function-tag tool call in assistant text", {
+                toolName: legacyCall.toolName,
+            });
+
+            const syntheticToolCallId = `legacy-${Date.now()}-${iteration}`;
+            const result = await toolRegistry.execute(
+                legacyCall.toolName,
+                legacyCall.argsJson,
+                { userId }
+            );
+
+            const assistantLegacyMessage: LLMMessage = {
+                role: "assistant",
+                content: null,
+                tool_calls: [{
+                    id: syntheticToolCallId,
+                    type: "function",
+                    function: {
+                        name: legacyCall.toolName,
+                        arguments: legacyCall.argsJson,
+                    },
+                }],
+            };
+
+            const toolMessage: LLMMessage = {
+                role: "tool",
+                content: result,
+                tool_call_id: syntheticToolCallId,
+                name: legacyCall.toolName,
+            };
+
+            messages.push(assistantLegacyMessage);
+            messages.push(toolMessage);
+
+            await saveConversationMessage(userId, "assistant", null, assistantLegacyMessage.tool_calls, undefined, order++);
+            await saveConversationMessage(userId, "tool", result, undefined, syntheticToolCallId, order++);
             continue;
         }
 
