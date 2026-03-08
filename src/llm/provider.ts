@@ -91,7 +91,7 @@ export function createLLMProvider(): LLMProvider {
     const providers: LLMProvider[] = [];
 
     // 1. Groq (Primary)
-    providers.push(new GroqProvider(config.GROQ_API_KEY));
+    providers.push(new GroqProvider(config.GROQ_API_KEY, config.GROQ_MODEL));
 
     // 2. Kimi (Integrated deeper fallback)
     if (config.KIMI_API_KEY) {
