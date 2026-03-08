@@ -116,7 +116,17 @@ export function createBot(llm: LLMProvider, toolRegistry: ToolRegistry): Bot {
         const userId = ctx.from?.id;
         if (!userId || !config.TELEGRAM_ALLOWED_USER_IDS.includes(userId)) {
             logger.warn(`🚫 Unauthorized access attempt from user ${userId ?? "unknown"}`);
-            return; // Silent rejection — don't reveal bot exists
+            if (ctx.chat?.id && userId) {
+                try {
+                    await ctx.reply(
+                        `🚫 Este bot no te tiene autorizado todavía.\nTu user ID es: \`${userId}\`\nPídele al admin que lo agregue en TELEGRAM_ALLOWED_USER_IDS.`,
+                        { parse_mode: "Markdown" }
+                    );
+                } catch {
+                    // ignore send failures for unauthorized users
+                }
+            }
+            return;
         }
 
         // Always allow /bot_start
