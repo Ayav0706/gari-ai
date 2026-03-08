@@ -13,6 +13,7 @@ import { getRulesSummary } from "../memory/db.js";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { config } from "../config.js";
 
 const MAX_ITERATIONS = 10;
 
@@ -125,6 +126,47 @@ async function buildSkillContext(userMessage: string): Promise<string> {
     return `\n\n### ACTIVE CODING SKILLS (OBLIGATORIO)\n` +
         `Debes seguir estas skills para responder y ejecutar tareas técnicas.\n\n` +
         loaded.join("\n\n");
+}
+
+async function runCriticPass(
+    llm: LLMProvider,
+    fullSystemPrompt: string,
+    userMessage: string,
+    draftReply: string
+): Promise<string> {
+    if (!config.CRITIC_PASS_ENABLED) return draftReply;
+
+    const criticPrompt = [
+        "Eres un crítico de calidad para respuestas de asistente.",
+        "TAREA: revisar la respuesta borrador y devolver una versión FINAL mejorada.",
+        "Reglas:",
+        "1) Mantén idioma español.",
+        "2) No inventes datos.",
+        "3) No incluyas etiquetas <function>, JSON crudo, ni llamadas de herramienta.",
+        "4) Si el borrador ya está bien, devuélvelo casi igual.",
+        "5) Sé claro y accionable.",
+    ].join("\n");
+
+    const criticMessages: LLMMessage[] = [
+        { role: "system", content: `${fullSystemPrompt}\n\n${criticPrompt}` },
+        { role: "user", content: `Mensaje del usuario:\n${userMessage}` },
+        { role: "assistant", content: `Borrador actual:\n${draftReply}` },
+        { role: "user", content: "Entrega la respuesta final mejorada." },
+    ];
+
+    try {
+        const reviewed = await llm.chat(criticMessages, undefined);
+        if (reviewed.finish_reason === "tool_calls") return draftReply;
+        const finalText = reviewed.message.content?.trim();
+        if (!finalText) return draftReply;
+        if (finalText.includes("<function>")) return draftReply;
+        return finalText;
+    } catch (error) {
+        logger.warn("Critic pass failed; keeping draft reply.", {
+            error: error instanceof Error ? error.message : String(error),
+        });
+        return draftReply;
+    }
 }
 
 const SYSTEM_PROMPT = `Eres **Gari**, un Senior AI Partner proactivo y autónomo. No eres un chatbot pasivo — eres un compañero de ejecución que se anticipa, investiga, y resuelve.
@@ -307,7 +349,8 @@ export async function runAgentLoop(
         }
 
         // LLM returned a text response → we're done
-        const reply = message.content ?? "🤔 No tengo una respuesta en este momento.";
+        const draftReply = message.content ?? "🤔 No tengo una respuesta en este momento.";
+        const reply = await runCriticPass(llm, fullSystemPrompt, userMessage, draftReply);
 
         // Save final assistant reply to history
         await saveConversationMessage(userId, "assistant", reply, undefined, undefined, order++);
