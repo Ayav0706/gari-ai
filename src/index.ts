@@ -20,8 +20,11 @@ import { weatherTool } from "./tools/weather.js";
 import { generateImageTool } from "./tools/generate-image.js";
 import { deepResearchTool } from "./tools/deep-research.js";
 import { remindersTool, setReminderCallback } from "./tools/reminders.js";
-import { createBot } from "./telegram/bot.js";
+import { createBot, registerTelegramCommands } from "./telegram/bot.js";
+import { saveUserFactTool } from "./tools/save-user-fact.js";
 import { executeShellCommandTool, readFileTool, writeFileTool, restartTool } from "./tools/system.js";
+import { webhookCallback } from "grammy";
+import { createServer } from "node:http";
 
 async function main(): Promise<void> {
     logger.info("🚀 Starting Gari...");
@@ -42,6 +45,7 @@ async function main(): Promise<void> {
     toolRegistry.register(generateImageTool);
     toolRegistry.register(deepResearchTool);
     toolRegistry.register(remindersTool);
+    toolRegistry.register(saveUserFactTool);
     toolRegistry.register(executeShellCommandTool);
     toolRegistry.register(readFileTool);
     toolRegistry.register(writeFileTool);
@@ -53,6 +57,7 @@ async function main(): Promise<void> {
 
     // 4. Telegram Bot
     const bot = createBot(llm, toolRegistry);
+    await registerTelegramCommands(bot);
 
     // Wire reminders to send Telegram messages when they fire
     setReminderCallback(async (reminder) => {
@@ -81,26 +86,75 @@ async function main(): Promise<void> {
     process.once("SIGINT", () => shutdown("SIGINT"));
     process.once("SIGTERM", () => shutdown("SIGTERM"));
 
-    // 5.5 Dummy HTTP Server for Cloud Providers (Render, Koyeb, etc.)
-    // Cloud platforms require an HTTP server to bind to a port to keep the container alive.
-    import("node:http").then(({ createServer }) => {
-        const port = process.env.PORT || 3000;
-        const server = createServer((req, res) => {
-            res.writeHead(200, { "Content-Type": "text/plain" });
-            res.end("Gari is running!");
-        });
-        server.listen(port, () => {
-            logger.info(`🌐 Health check server listening on port ${port}`);
-        });
-    });
-
     // 6. Start!
     logger.info("──────────────────────────────────────");
     logger.info("🤖 Gari is online and listening on Telegram!");
     logger.info(`👤 Allowed users: ${config.TELEGRAM_ALLOWED_USER_IDS.join(", ")}`);
     logger.info("──────────────────────────────────────");
 
-    bot.start();
+    const inferredWebhookBase = process.env.RENDER_EXTERNAL_URL?.trim() || "";
+    const configuredWebhookUrl = config.TELEGRAM_WEBHOOK_URL.trim();
+    const webhookUrl = configuredWebhookUrl || (inferredWebhookBase ? `${inferredWebhookBase}/telegram/webhook` : "");
+    const webhookSecret = config.TELEGRAM_WEBHOOK_SECRET.trim();
+    const port = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
+    const host = "0.0.0.0";
+
+    if (webhookUrl) {
+        await bot.init();
+        await bot.api.setWebhook(webhookUrl, webhookSecret ? { secret_token: webhookSecret } : {});
+        logger.info(`🔗 Webhook mode enabled: ${webhookUrl}`);
+
+        const handleUpdate = webhookCallback(bot, "http");
+        const server = createServer((req, res) => {
+            const requestPath = req.url?.split("?")[0] || "/";
+
+            if (req.method === "POST" && requestPath === "/telegram/webhook") {
+                if (webhookSecret) {
+                    const receivedSecret = req.headers["x-telegram-bot-api-secret-token"];
+                    if (receivedSecret !== webhookSecret) {
+                        res.writeHead(401, { "Content-Type": "text/plain" });
+                        res.end("Unauthorized");
+                        return;
+                    }
+                }
+                handleUpdate(req, res);
+                return;
+            }
+
+            if (requestPath === "/" || requestPath === "/health") {
+                res.writeHead(200, { "Content-Type": "text/plain" });
+                res.end("Gari is running!");
+                return;
+            }
+
+            res.writeHead(404, { "Content-Type": "text/plain" });
+            res.end("Not found");
+        });
+
+        server.listen(port, host, () => {
+            logger.info(`🌐 HTTP server listening on http://${host}:${port}`);
+        });
+    } else {
+        await bot.api.deleteWebhook({ drop_pending_updates: false });
+        logger.info("📡 Polling mode enabled (no webhook URL configured).");
+
+        const server = createServer((req, res) => {
+            const requestPath = req.url?.split("?")[0] || "/";
+            if (requestPath === "/" || requestPath === "/health") {
+                res.writeHead(200, { "Content-Type": "text/plain" });
+                res.end("Gari is running!");
+                return;
+            }
+            res.writeHead(404, { "Content-Type": "text/plain" });
+            res.end("Not found");
+        });
+
+        server.listen(port, host, () => {
+            logger.info(`🌐 Health check server listening on http://${host}:${port}`);
+        });
+
+        bot.start();
+    }
 }
 
 main().catch((error) => {
