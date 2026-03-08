@@ -68,6 +68,9 @@ export interface ToolParameter {
     type: string;
     description: string;
     enum?: string[];
+    items?: ToolParameter | { type: string }; // Support arrays
+    properties?: Record<string, ToolParameter>; // Support nested objects
+    required?: string[];
     default?: unknown;
 }
 
@@ -99,7 +102,7 @@ export interface ToolDefinition {
     };
 
     /** Execute the tool with validated arguments */
-    execute: (args: Record<string, unknown>) => Promise<string>;
+    execute: (args: Record<string, unknown>, context?: { userId: number }) => Promise<string>;
 }
 
 // ── Memory Types ────────────────────────────
@@ -109,6 +112,8 @@ export interface MemoryEntry {
     user_id: number;
     key: string;
     value: string;
+    category?: "GENERAL" | "PERSONAL" | "PROJECTS" | "TECH" | "HOBBIES" | "WORK";
+    tags?: string[];
     created_at: string;
     updated_at: string;
 }
@@ -116,7 +121,10 @@ export interface MemoryEntry {
 export interface ConversationMessage {
     id: string;      // Firebase document ID
     user_id: number;
-    role: string;
-    content: string;
-    timestamp: string;
+    role: "user" | "assistant" | "tool" | "system";
+    content: string | null;
+    tool_calls?: LLMToolCall[];
+    tool_call_id?: string;
+    timestamp: any; // Using any for Firestore timesamp compatibility
+    order: number; // For stable ordering of multi-turn assistant/tool messages
 }
