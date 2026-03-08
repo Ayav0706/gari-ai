@@ -75,6 +75,37 @@ async function safeReply(ctx: any, text: string): Promise<void> {
     }
 }
 
+async function sendReplyWithChartSupport(ctx: any, reply: string): Promise<void> {
+    const chartMatches = [...reply.matchAll(/CHART_URL:(https?:\/\/\S+)/g)];
+    const chartUrls = chartMatches.map((m) => m[1]);
+
+    // Remove internal chart metadata lines from final text shown to user.
+    const cleaned = reply
+        .replace(/CHART_URL:https?:\/\/\S+\s*/g, "")
+        .replace(/CHART_TITLE:.*$/gm, "")
+        .trim();
+
+    for (const url of chartUrls) {
+        try {
+            await ctx.replyWithPhoto(url);
+        } catch (error) {
+            logger.warn("Failed to send chart image to Telegram", { error: String(error), url });
+            await safeReply(ctx, `📊 No pude enviar la imagen del gráfico, pero aquí está el enlace:\n${url}`);
+        }
+    }
+
+    if (cleaned.length > 0) {
+        if (cleaned.length > 4000) {
+            const chunks = splitMessage(cleaned, 4000);
+            for (const chunk of chunks) {
+                await safeReply(ctx, chunk);
+            }
+        } else {
+            await safeReply(ctx, cleaned);
+        }
+    }
+}
+
 function createRequestId(): string {
     return randomUUID().split("-")[0];
 }
@@ -454,16 +485,7 @@ export function createBot(llm: LLMProvider, toolRegistry: ToolRegistry): Bot {
 
         try {
             const reply = await runAgentLoop(userMessage, userId, llm, toolRegistry);
-
-            // Split long messages (Telegram limit: 4096 chars)
-            if (reply.length > 4000) {
-                const chunks = splitMessage(reply, 4000);
-                for (const chunk of chunks) {
-                    await safeReply(ctx, chunk);
-                }
-            } else {
-                await safeReply(ctx, reply);
-            }
+            await sendReplyWithChartSupport(ctx, reply);
         } catch (error) {
             const errMsg = error instanceof Error ? error.message : String(error);
             logger.error("Error in agent loop:", { requestId, error: errMsg, userId });
@@ -526,17 +548,12 @@ export function createBot(llm: LLMProvider, toolRegistry: ToolRegistry): Bot {
                     if (audioBuffer) {
                         await ctx.replyWithVoice(new InputFile(audioBuffer, "response.mp3"));
                         // Also send text for reference
-                        await safeReply(ctx, reply);
+                        await sendReplyWithChartSupport(ctx, reply);
                     } else {
-                        await safeReply(ctx, reply);
-                    }
-                } else if (reply.length > 4000) {
-                    const chunks = splitMessage(reply, 4000);
-                    for (const chunk of chunks) {
-                        await safeReply(ctx, chunk);
+                        await sendReplyWithChartSupport(ctx, reply);
                     }
                 } else {
-                    await safeReply(ctx, reply);
+                    await sendReplyWithChartSupport(ctx, reply);
                 }
             } finally {
                 clearInterval(typingInterval);
@@ -561,7 +578,7 @@ export function createBot(llm: LLMProvider, toolRegistry: ToolRegistry): Bot {
             const enrichedMessage = `[El usuario envió una foto con el siguiente texto]: ${caption}`;
             try {
                 const reply = await runAgentLoop(enrichedMessage, userId, llm, toolRegistry);
-                await safeReply(ctx, reply);
+                await sendReplyWithChartSupport(ctx, reply);
             } catch (error) {
                 logger.error("Error processing photo caption:", { error: String(error) });
                 await ctx.reply("⚠️ Hubo un error procesando tu mensaje. Intenta de nuevo.");
@@ -587,7 +604,7 @@ export function createBot(llm: LLMProvider, toolRegistry: ToolRegistry): Bot {
             const enrichedMessage = `[El usuario envió un documento "${doc?.file_name || "archivo"}" con el texto]: ${caption}`;
             try {
                 const reply = await runAgentLoop(enrichedMessage, userId, llm, toolRegistry);
-                await safeReply(ctx, reply);
+                await sendReplyWithChartSupport(ctx, reply);
             } catch (error) {
                 logger.error("Error processing document caption:", { error: String(error) });
                 await ctx.reply("⚠️ Hubo un error procesando tu mensaje. Intenta de nuevo.");
