@@ -48,11 +48,15 @@ export const googleWorkspaceTool: ToolDefinition = {
     execute: async (args: Record<string, unknown>): Promise<string> => {
         try {
             const auth = await authorize();
-            const action = args.action as string;
+            const rawAction = String(args.action || "");
+            const action = rawAction
+                .toLowerCase()
+                .replace(/\s+/g, "_")
+                .replace(/-/g, "_");
             const query = args.query as string || "";
             const max = (args.maxResults as number) || 5;
 
-            if (action === "search_emails") {
+            if (action === "search_emails" || action === "searchemails") {
                 const gmail = google.gmail({ version: "v1", auth });
                 const res = await gmail.users.messages.list({ userId: "me", q: query, maxResults: max });
                 
@@ -70,7 +74,7 @@ export const googleWorkspaceTool: ToolDefinition = {
                 return emails.join("\n\n---\n\n");
             }
 
-            if (action === "list_events") {
+            if (action === "list_events" || action === "listevents") {
                 const calendar = google.calendar({ version: "v3", auth });
                 const res = await calendar.events.list({
                     calendarId: "primary",
@@ -84,7 +88,7 @@ export const googleWorkspaceTool: ToolDefinition = {
                 return events.map(e => `${e.start?.dateTime || e.start?.date}: ${e.summary}`).join("\n");
             }
 
-            if (action === "search_drive_files") {
+            if (action === "search_drive_files" || action === "searchdrivefiles") {
                 const drive = google.drive({ version: "v3", auth });
                 let q = "trashed = false";
                 if (query) q += ` and name contains '${query}'`;
@@ -100,7 +104,7 @@ export const googleWorkspaceTool: ToolDefinition = {
                 return files.map(f => `Nombre: ${f.name}\nLink: ${f.webViewLink}`).join("\n\n");
             }
 
-            return `Acción no reconocida: ${action}`;
+            return `Acción no reconocida: ${rawAction}`;
         } catch (error: any) {
             logger.error(`Error en Google Workspace: ${error.message}`);
             return `Ocurrió un error con la API de Google: ${error.message}`;
