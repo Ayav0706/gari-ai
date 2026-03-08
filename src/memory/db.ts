@@ -160,6 +160,81 @@ export async function getMemorySummary(userId: number): Promise<string> {
     return summary.trim();
 }
 
+function normalizeErrorSignature(raw: string): string {
+    return raw
+        .toLowerCase()
+        // IDs/timestamps/random-like chunks
+        .replace(/\b[0-9a-f]{8,}\b/g, "<hex>")
+        .replace(/\b\d{6,}\b/g, "<num>")
+        // URLs and file paths
+        .replace(/https?:\/\/\S+/g, "<url>")
+        .replace(/[a-z]:\\[^\s]+/gi, "<path>")
+        .replace(/\/[^\s]+/g, "<path>")
+        // Collapse whitespace
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 220);
+}
+
+function signatureDocId(signature: string): string {
+    return Buffer.from(signature, "utf8").toString("base64url").slice(0, 180);
+}
+
+/**
+ * Store or increment a recurrent runtime error pattern for a user.
+ * Useful to inject "known failures" into the system prompt and avoid repeating them.
+ */
+export async function recordRecurrentError(
+    userId: number,
+    rawError: string,
+    context?: string,
+    requestId?: string
+): Promise<void> {
+    const signature = normalizeErrorSignature(rawError);
+    if (!signature) return;
+
+    const docId = signatureDocId(signature);
+    const docRef = db.collection("users").doc(userId.toString())
+        .collection("error_patterns").doc(docId);
+
+    await docRef.set({
+        signature,
+        sample: rawError.slice(0, 500),
+        context: context?.slice(0, 500),
+        request_id: requestId?.slice(0, 100),
+        count: admin.firestore.FieldValue.increment(1),
+        first_seen: admin.firestore.FieldValue.serverTimestamp(),
+        last_seen: admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true });
+}
+
+/**
+ * Summarize recent recurrent errors to help the agent avoid known failure loops.
+ */
+export async function getRecentErrorPatternsSummary(userId: number, limit: number = 5): Promise<string> {
+    const snapshot = await db.collection("users").doc(userId.toString())
+        .collection("error_patterns")
+        .orderBy("last_seen", "desc")
+        .limit(limit)
+        .get();
+
+    if (snapshot.empty) return "";
+
+    const lines = snapshot.docs.map((doc, i) => {
+        const data = doc.data();
+        const signature = String(data.signature || "error desconocido");
+        const count = Number(data.count || 1);
+        const context = data.context ? ` | contexto: ${String(data.context)}` : "";
+        return `${i + 1}. (${count}x) ${signature}${context}`;
+    });
+
+    return [
+        "### ERRORES RECURRENTES A EVITAR",
+        "Si un intento previo falló con estos patrones, cambia de estrategia y usa herramientas.",
+        ...lines,
+    ].join("\n");
+}
+
 // ── User Rules ──────────────────────────────
 
 /**
