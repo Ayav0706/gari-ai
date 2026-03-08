@@ -8,19 +8,21 @@ import { logger } from "../logger.js";
 import type { LLMMessage, LLMProvider, LLMResponse, LLMToolCall, ToolSchema } from "../types.js";
 
 const GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions";
-const GROQ_MODEL = "llama-3.3-70b-versatile";
+const DEFAULT_GROQ_MODEL = "llama-3.3-70b-versatile";
 
 export class GroqProvider implements LLMProvider {
     readonly name = "Groq";
     private apiKey: string;
+    private model: string;
 
-    constructor(apiKey: string) {
+    constructor(apiKey: string, model: string = DEFAULT_GROQ_MODEL) {
         this.apiKey = apiKey;
+        this.model = model;
     }
 
     async chat(messages: LLMMessage[], tools?: ToolSchema[]): Promise<LLMResponse> {
         const body: Record<string, unknown> = {
-            model: GROQ_MODEL,
+            model: this.model,
             messages: messages.map((m) => this.formatMessage(m)),
             temperature: 0.7,
             max_tokens: 2048,
