@@ -22,6 +22,7 @@ import {
     clearRules,
     setBotStatus,
     getBotStatus,
+    recordRecurrentError,
 } from "../memory/db.js";
 import { isTTSAvailable, textToSpeech } from "../tts/elevenlabs.js";
 import type { LLMProvider } from "../types.js";
@@ -132,6 +133,27 @@ function buildFriendlyErrorMessage(error: unknown, requestId: string): string {
         return `⚠️ Hubo un problema temporal con la base de datos. Ya quedó registrado para revisión.\n\nID: \`${requestId}\``;
     }
     return `⚠️ Hubo un error procesando tu mensaje. Intenta de nuevo.\n\nID: \`${requestId}\``;
+}
+
+async function rememberRuntimeError(
+    userId: number | undefined,
+    scope: string,
+    error: unknown,
+    requestId?: string
+): Promise<void> {
+    if (!userId) return;
+    const raw = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+    const context = `scope=${scope}`;
+    try {
+        await recordRecurrentError(userId, `${scope} | ${raw}`, context, requestId);
+    } catch (persistError) {
+        logger.warn("Could not persist recurrent error pattern", {
+            userId,
+            scope,
+            requestId,
+            error: persistError instanceof Error ? persistError.message : String(persistError),
+        });
+    }
 }
 
 /**
@@ -489,6 +511,7 @@ export function createBot(llm: LLMProvider, toolRegistry: ToolRegistry): Bot {
         } catch (error) {
             const errMsg = error instanceof Error ? error.message : String(error);
             logger.error("Error in agent loop:", { requestId, error: errMsg, userId });
+            await rememberRuntimeError(userId, "message:text", error, requestId);
             await safeReply(ctx, buildFriendlyErrorMessage(error, requestId));
         } finally {
             clearInterval(typingInterval);
@@ -503,6 +526,7 @@ export function createBot(llm: LLMProvider, toolRegistry: ToolRegistry): Bot {
     // ── Voice / Audio Handler ─────────────────
     bot.on(["message:voice", "message:audio"], async (ctx) => {
         const userId = ctx.from.id;
+        const requestId = createRequestId();
 
         await ctx.replyWithChatAction("typing");
 
@@ -561,7 +585,8 @@ export function createBot(llm: LLMProvider, toolRegistry: ToolRegistry): Bot {
 
         } catch (error) {
             const errMsg = error instanceof Error ? error.message : String(error);
-            logger.error("Error processing audio:", { error: errMsg, userId });
+            logger.error("Error processing audio:", { requestId, error: errMsg, userId });
+            await rememberRuntimeError(userId, "message:audio", error, requestId);
             await ctx.reply("⚠️ Hubo un error procesando tu audio. ¿Puedes escribirlo?");
         }
     });
@@ -576,11 +601,13 @@ export function createBot(llm: LLMProvider, toolRegistry: ToolRegistry): Bot {
         if (caption) {
             await ctx.replyWithChatAction("typing");
             const enrichedMessage = `[El usuario envió una foto con el siguiente texto]: ${caption}`;
+            const requestId = createRequestId();
             try {
                 const reply = await runAgentLoop(enrichedMessage, userId, llm, toolRegistry);
                 await sendReplyWithChartSupport(ctx, reply);
             } catch (error) {
-                logger.error("Error processing photo caption:", { error: String(error) });
+                logger.error("Error processing photo caption:", { requestId, error: String(error), userId });
+                await rememberRuntimeError(userId, "message:photo", error, requestId);
                 await ctx.reply("⚠️ Hubo un error procesando tu mensaje. Intenta de nuevo.");
             }
         } else {
@@ -602,11 +629,13 @@ export function createBot(llm: LLMProvider, toolRegistry: ToolRegistry): Bot {
         if (caption) {
             await ctx.replyWithChatAction("typing");
             const enrichedMessage = `[El usuario envió un documento "${doc?.file_name || "archivo"}" con el texto]: ${caption}`;
+            const requestId = createRequestId();
             try {
                 const reply = await runAgentLoop(enrichedMessage, userId, llm, toolRegistry);
                 await sendReplyWithChartSupport(ctx, reply);
             } catch (error) {
-                logger.error("Error processing document caption:", { error: String(error) });
+                logger.error("Error processing document caption:", { requestId, error: String(error), userId });
+                await rememberRuntimeError(userId, "message:document", error, requestId);
                 await ctx.reply("⚠️ Hubo un error procesando tu mensaje. Intenta de nuevo.");
             }
         } else {
@@ -625,7 +654,10 @@ export function createBot(llm: LLMProvider, toolRegistry: ToolRegistry): Bot {
 
     // ── Error Handler ───────────────────────────
     bot.catch((err) => {
-        logger.error("Bot error:", { error: err.message ?? String(err) });
+        const requestId = createRequestId();
+        logger.error("Bot error:", { requestId, error: err.message ?? String(err) });
+        const userId = err.ctx?.from?.id;
+        void rememberRuntimeError(userId, "bot.catch", err.error ?? err.message, requestId);
     });
 
     return bot;
