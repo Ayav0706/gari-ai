@@ -116,10 +116,10 @@ export async function runAgentLoop(
 
     const messages: LLMMessage[] = [{ role: "system", content: fullSystemPrompt }];
 
-    // Load recent history (last 20 messages to have more context including tool steps)
+    // Load recent history (last 20 messages to have more context including tool steps).
+    // getRecentMessages already returns oldest -> newest for prompt correctness.
     const history = await getRecentMessages(userId, 20);
-    // Reverse because getRecentMessages returns desc (newest first)
-    messages.push(...(history.reverse() as LLMMessage[]));
+    messages.push(...history);
 
     messages.push({ role: "user", content: userMessage });
 
