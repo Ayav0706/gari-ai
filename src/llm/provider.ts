@@ -23,10 +23,16 @@ class FailoverProvider implements LLMProvider {
         this.providers = providers.filter(p => p !== null);
     }
 
+    /** Small delay to let rate-limited APIs recover before trying next provider */
+    private sleep(ms: number): Promise<void> {
+        return new Promise(resolve => setTimeout(resolve, ms));
+    }
+
     async chat(messages: LLMMessage[], tools?: ToolSchema[]): Promise<LLMResponse> {
         let lastError: any = null;
 
-        for (const provider of this.providers) {
+        for (let i = 0; i < this.providers.length; i++) {
+            const provider = this.providers[i];
             try {
                 return await provider.chat(messages, tools);
             } catch (error: any) {
@@ -53,7 +59,10 @@ class FailoverProvider implements LLMProvider {
                 const isBadRequest = status === 400 || error.message?.includes("400");
 
                 if (isRateLimit || isServiceError || isBadRequest) {
-                    logger.warn(`⚠️ ${provider.name} failed (${status || 'Error'}). Trying next provider...`);
+                    // Backoff: wait before trying next provider (longer for rate limits)
+                    const delay = isRateLimit ? 2000 : 1000;
+                    logger.warn(`⚠️ ${provider.name} failed (${status || 'Error'}). Waiting ${delay}ms before next provider...`);
+                    await this.sleep(delay);
                     continue;
                 }
                 // For auth errors (401, 403) fail fast
