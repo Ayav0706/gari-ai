@@ -37,6 +37,88 @@ const CODING_SKILLS_PRIORITY = [
     "writing-plans",
 ];
 
+type GdpChartIntent = {
+    countryCode: string;
+    countryName: string;
+    years: number;
+};
+
+function detectGdpChartIntent(userMessage: string): GdpChartIntent | null {
+    const text = userMessage.toLowerCase();
+    const asksChart = text.includes("graf") || text.includes("gráf") || text.includes("chart");
+    const asksGdp = text.includes("pib") || text.includes("gdp");
+    if (!asksChart || !asksGdp) return null;
+
+    let years = 30;
+    const yearsMatch = text.match(/(\d{1,2})\s*(años|anos|years)/i);
+    if (yearsMatch) {
+        const parsed = Number(yearsMatch[1]);
+        if (Number.isFinite(parsed)) {
+            years = Math.max(5, Math.min(60, parsed));
+        }
+    }
+
+    if (text.includes("ecuador")) {
+        return { countryCode: "ECU", countryName: "Ecuador", years };
+    }
+
+    return null;
+}
+
+async function buildGdpChartReplyFromWorldBank(
+    intent: GdpChartIntent,
+    toolRegistry: ToolRegistry,
+    userId: number
+): Promise<string | null> {
+    const indicator = "NY.GDP.MKTP.KD"; // GDP (constant 2015 US$) => real GDP
+    const url = `https://api.worldbank.org/v2/country/${intent.countryCode}/indicator/${indicator}?format=json&per_page=70`;
+    const response = await fetch(url);
+    if (!response.ok) return null;
+
+    const payload = await response.json() as unknown;
+    if (!Array.isArray(payload) || payload.length < 2 || !Array.isArray(payload[1])) return null;
+
+    const rows = payload[1] as Array<{ date?: string; value?: number | null }>;
+    const points = rows
+        .filter((r) => r.value !== null && r.value !== undefined && r.date)
+        .map((r) => ({
+            year: Number(r.date),
+            valueBn: Number((Number(r.value) / 1_000_000_000).toFixed(2)),
+        }))
+        .filter((r) => Number.isFinite(r.year) && Number.isFinite(r.valueBn))
+        .sort((a, b) => a.year - b.year);
+
+    if (points.length < 5) return null;
+
+    const sliced = points.slice(-intent.years);
+    const labels = sliced.map((p) => String(p.year));
+    const values = sliced.map((p) => p.valueBn);
+
+    const chartResult = await toolRegistry.execute(
+        "generate_chart",
+        JSON.stringify({
+            chart_type: "line",
+            title: `PIB real de ${intent.countryName} (${labels[0]}-${labels[labels.length - 1]})`,
+            labels,
+            values,
+            dataset_label: "PIB real (miles de millones USD constantes 2015)",
+        }),
+        { userId }
+    );
+
+    if (!chartResult || chartResult.startsWith("Error")) return null;
+
+    const latest = values[values.length - 1];
+    const first = values[0];
+    const trend = latest >= first ? "creciente" : "decreciente";
+
+    return `${chartResult}
+
+Aquí tienes la gráfica del PIB real de ${intent.countryName} para los últimos ${sliced.length} años.
+Tendencia general: ${trend} (${first} → ${latest} miles de millones, USD constantes 2015).
+Fuente: Banco Mundial (indicador ${indicator}).`;
+}
+
 /** Rough token estimate: 1 token ≈ 4 chars for English/Spanish mixed text */
 function estimateTokens(text: string | null): number {
     return text ? Math.ceil(text.length / 4) : 0;
@@ -259,6 +341,24 @@ export async function runAgentLoop(
 
     // Get tool schemas
     const toolSchemas: ToolSchema[] = toolRegistry.getSchemas();
+
+    // Self-repair fast-path: for GDP chart requests, fetch trusted data and force chart generation.
+    const gdpChartIntent = detectGdpChartIntent(userMessage);
+    if (gdpChartIntent) {
+        try {
+            const forcedChartReply = await buildGdpChartReplyFromWorldBank(gdpChartIntent, toolRegistry, userId);
+            if (forcedChartReply) {
+                await saveConversationMessage(userId, "assistant", forcedChartReply, undefined, undefined, order++);
+                manageConversationSize(userId, llm).catch(err => logger.error("Pruning error:", err));
+                return forcedChartReply;
+            }
+        } catch (error) {
+            logger.warn("GDP chart fast-path failed; falling back to normal agent loop.", {
+                error: error instanceof Error ? error.message : String(error),
+                userId,
+            });
+        }
+    }
 
     // ── ReAct Loop ──────────────────────────────
     for (let iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
