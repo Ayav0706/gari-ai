@@ -1,53 +1,109 @@
-// ============================================
-// GARI – Tool: Google Workspace (gog)
-// ============================================
-// Tool to interact with Gmail, Calendar, Drive, etc.
-// Requires the 'gog' CLI to be installed and configured.
-
-import { exec } from "node:child_process";
-import { promisify } from "node:util";
+import { google } from "googleapis";
 import type { ToolDefinition } from "../types.js";
 import { logger } from "../logger.js";
+import fs from "fs/promises";
+import path from "path";
+import process from "process";
 
-const execAsync = promisify(exec);
+const TOKEN_PATH = path.join(process.cwd(), "token.json");
+const CREDENTIALS_PATH = path.join(process.cwd(), "credentials.json");
+
+async function authorize() {
+    try {
+        const content = await fs.readFile(TOKEN_PATH, "utf-8");
+        const credentials = JSON.parse(content);
+        const auth = google.auth.fromJSON(credentials) as any;
+        return auth;
+    } catch (err) {
+        throw new Error("No se encontró token.json. Ejecuta 'npx tsx src/tools/auth-google.ts' primero.");
+    }
+}
 
 export const googleWorkspaceTool: ToolDefinition = {
     name: "google_workspace",
     description:
-        "Interacts with Google Workspace (Gmail, Calendar, Drive, Sheets, Docs). " +
-        "Allows searching emails, sending messages, managing events, and reading files. " +
-        "Uses the 'gog' CLI internally.",
+        "Interactúa con Google Workspace (Gmail, Calendar, Drive). " +
+        "Permite buscar correos, leer eventos y buscar archivos usando la API oficial.",
     parameters: {
         type: "object",
         properties: {
-            command: {
+            action: {
                 type: "string",
-                description:
-                    "The full 'gog' command to execute (e.g., 'gmail search newer_than:1d'). " +
-                    "Do NOT include the 'gog' binary name itself.",
+                enum: ["search_emails", "list_events", "search_drive_files"],
+                description: "La acción a realizar en Google Workspace.",
             },
+            query: {
+                type: "string",
+                description: "Consulta de búsqueda (ej. 'from:juan' para correos o 'nombre_archivo' para Drive).",
+            },
+            maxResults: {
+                type: "number",
+                description: "Cantidad máxima de resultados (por defecto 5).",
+                default: 5
+            }
         },
-        required: ["command"],
+        required: ["action"],
     },
 
     execute: async (args: Record<string, unknown>): Promise<string> => {
-        const cmd = args.command as string;
         try {
-            logger.info(`Executing Google Workspace command: gog ${cmd}`);
+            const auth = await authorize();
+            const action = args.action as string;
+            const query = args.query as string || "";
+            const max = (args.maxResults as number) || 5;
 
-            // Execute the gog command
-            // Note: In production, the gog binary must be in the PATH.
-            const { stdout, stderr } = await execAsync(`gog ${cmd} --json --no-input`);
-
-            if (stderr && !stdout) {
-                return `Error executing command: ${stderr}`;
+            if (action === "search_emails") {
+                const gmail = google.gmail({ version: "v1", auth });
+                const res = await gmail.users.messages.list({ userId: "me", q: query, maxResults: max });
+                
+                if (!res.data.messages || res.data.messages.length === 0) return "No se encontraron correos.";
+                
+                let emails = [];
+                for (const msg of res.data.messages) {
+                    const msgData = await gmail.users.messages.get({ userId: "me", id: msg.id! });
+                    const headers = msgData.data.payload?.headers;
+                    const subject = headers?.find(h => h.name === "Subject")?.value;
+                    const from = headers?.find(h => h.name === "From")?.value;
+                    const snippet = msgData.data.snippet;
+                    emails.push(`De: ${from}\nAsunto: ${subject}\nSnippet: ${snippet}`);
+                }
+                return emails.join("\n\n---\n\n");
             }
 
-            return stdout || "Command executed successfully (no output).";
+            if (action === "list_events") {
+                const calendar = google.calendar({ version: "v3", auth });
+                const res = await calendar.events.list({
+                    calendarId: "primary",
+                    timeMin: new Date().toISOString(),
+                    maxResults: max,
+                    singleEvents: true,
+                    orderBy: "startTime",
+                });
+                const events = res.data.items;
+                if (!events || events.length === 0) return "No hay eventos próximos.";
+                return events.map(e => `${e.start?.dateTime || e.start?.date}: ${e.summary}`).join("\n");
+            }
+
+            if (action === "search_drive_files") {
+                const drive = google.drive({ version: "v3", auth });
+                let q = "trashed = false";
+                if (query) q += ` and name contains '${query}'`;
+                
+                const res = await drive.files.list({
+                    q,
+                    fields: "nextPageToken, files(id, name, webViewLink)",
+                    spaces: "drive",
+                    pageSize: max,
+                });
+                const files = res.data.files;
+                if (!files || files.length === 0) return "No se encontraron archivos.";
+                return files.map(f => `Nombre: ${f.name}\nLink: ${f.webViewLink}`).join("\n\n");
+            }
+
+            return `Acción no reconocida: ${action}`;
         } catch (error: any) {
-            const msg = error.message || String(error);
-            logger.error(`Google Workspace tool failed: ${msg}`);
-            return `Failed to execute Google Workspace command. Ensure the 'gog' CLI is installed and configured.\nError: ${msg}`;
+            logger.error(`Error en Google Workspace: ${error.message}`);
+            return `Ocurrió un error con la API de Google: ${error.message}`;
         }
     },
 };
