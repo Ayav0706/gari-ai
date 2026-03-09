@@ -26,6 +26,6 @@
 - buildDynamicContext() → inyecta día/fecha/hora/timezone en español
 
 ## Next Steps
-1. Ejecutar prueba E2E con Groq/Telegram validando flujo completo `user -> tool_calls -> tool -> assistant`
-2. Validar persistencia en Firestore (`request_id`, `created_at_ms`, `name`) y ausencia de tool results huérfanos
-3. Cerrar Fase 2 (Memory improvements) y marcar estado final
+1. Ejecutar prueba E2E con casos complejos para validar task-state persistente por fases y quality gate.
+2. Afinar umbrales del gate (cuándo exigir más evidencia) según comportamiento real en Telegram.
+3. Diseñar la siguiente iteración: sub-tareas paralelas por plan (multi-step executor) y métricas de éxito por fase.
