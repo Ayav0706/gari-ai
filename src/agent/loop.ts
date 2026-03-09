@@ -319,6 +319,55 @@ async function runCriticPass(
     }
 }
 
+async function verifyAndRepairReply(
+    llm: LLMProvider,
+    fullSystemPrompt: string,
+    userMessage: string,
+    reply: string
+): Promise<string> {
+    const lower = reply.toLowerCase();
+    const hasLowQualityPattern =
+        lower.includes("como modelo de ia") ||
+        lower.includes("no tengo la capacidad") ||
+        lower.includes("no puedo generar gráficas") ||
+        lower.includes("<function>") ||
+        lower.includes("```json");
+
+    if (!hasLowQualityPattern && reply.trim().length >= 12) {
+        return reply;
+    }
+
+    const verifierPrompt = [
+        "Eres un verificador de calidad de respuesta final.",
+        "Reescribe la respuesta para que sea útil, accionable y en español.",
+        "Reglas estrictas:",
+        "1) No uses frases de incapacidad genérica.",
+        "2) No reveles etiquetas de función ni JSON.",
+        "3) Si falta información, pide una aclaración mínima y concreta.",
+        "4) Mantén tono profesional y breve.",
+        "Devuelve SOLO la respuesta final mejorada.",
+    ].join("\n");
+
+    const verifierMessages: LLMMessage[] = [
+        { role: "system", content: `${fullSystemPrompt}\n\n${verifierPrompt}` },
+        { role: "user", content: `Mensaje original del usuario:\n${userMessage}` },
+        { role: "assistant", content: `Respuesta a verificar:\n${reply}` },
+        { role: "user", content: "Entrega la versión final corregida." },
+    ];
+
+    try {
+        const reviewed = await llm.chat(verifierMessages, undefined);
+        const repaired = reviewed.message.content?.trim();
+        if (!repaired || repaired.includes("<function>")) return reply;
+        return repaired;
+    } catch (error) {
+        logger.warn("Verifier pass failed; keeping previous reply.", {
+            error: error instanceof Error ? error.message : String(error),
+        });
+        return reply;
+    }
+}
+
 const SYSTEM_PROMPT = `Eres **Gari**, un Senior AI Partner proactivo y autónomo. No eres un chatbot pasivo — eres un compañero de ejecución que se anticipa, investiga, y resuelve.
 
 ## Filosofía de Operación
@@ -548,7 +597,8 @@ export async function runAgentLoop(
 
         // LLM returned a text response → we're done
         const draftReply = message.content ?? "🤔 No tengo una respuesta en este momento.";
-        const reply = await runCriticPass(llm, fullSystemPrompt, userMessage, draftReply);
+        const criticReply = await runCriticPass(llm, fullSystemPrompt, userMessage, draftReply);
+        const reply = await verifyAndRepairReply(llm, fullSystemPrompt, userMessage, criticReply);
 
         // Save final assistant reply to history
         await saveConversationMessage(userId, "assistant", reply, undefined, undefined, order++);
