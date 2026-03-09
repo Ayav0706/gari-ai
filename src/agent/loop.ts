@@ -690,6 +690,14 @@ function buildDynamicContext(): string {
     return `\n\n📅 Contexto temporal: ${day}, ${date} — ${time} (${tz})`;
 }
 
+function buildMinimalFallbackPrompt(): string {
+    return [
+        "Eres Gari. Responde en español de forma útil, concreta y breve.",
+        "Si faltan datos, pide una aclaración mínima.",
+        "No uses herramientas ni JSON en esta respuesta de contingencia.",
+    ].join("\n");
+}
+
 /**
  * Run the agent loop for a user message.
  * Returns the final text response to send back to the user.
@@ -834,8 +842,34 @@ export async function runAgentLoop(
             response = await chatWithTimeout(llm, trimmedMessages, toolSchemas);
         } catch (error) {
             const errMsg = error instanceof Error ? error.message : String(error);
-            logger.error("LLM call failed:", { error: errMsg });
-            return "⚠️ Lo siento, hubo un error al procesar tu mensaje. Intenta de nuevo en un momento.";
+            logger.error("LLM call failed on main path; trying degraded fallback.", {
+                error: errMsg,
+                requestId,
+                userId,
+                iteration,
+            });
+
+            try {
+                const degradedMessages: LLMMessage[] = [
+                    { role: "system", content: buildMinimalFallbackPrompt() },
+                    { role: "user", content: userMessage.slice(0, 2500) },
+                ];
+                const degraded = await chatWithTimeout(llm, degradedMessages, undefined);
+                const degradedReply = (degraded.message.content || "").trim();
+                if (degradedReply.length > 0) {
+                    const safeReply = `${degradedReply}\n\n_Nota: respuesta en modo contingencia (sin tools)._`;
+                    await saveConversationMessage(userId, "assistant", safeReply, undefined, undefined, order++, requestId);
+                    return safeReply;
+                }
+            } catch (fallbackError) {
+                logger.error("LLM degraded fallback also failed.", {
+                    requestId,
+                    userId,
+                    error: fallbackError instanceof Error ? fallbackError.message : String(fallbackError),
+                });
+            }
+
+            return `⚠️ Lo siento, hubo un error al procesar tu mensaje. Intenta de nuevo en un momento.\n\nID: \`${requestId}\``;
         }
 
         const { message, finish_reason } = response;
