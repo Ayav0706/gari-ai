@@ -26,6 +26,6 @@
 - buildDynamicContext() → inyecta día/fecha/hora/timezone en español
 
 ## Next Steps
-1. Fase 2: Memory improvements (auto-save + summarization)
-2. Deploy updated version to Render
-3. Test photo/document handlers in production
+1. Ejecutar prueba E2E con Groq/Telegram validando flujo completo `user -> tool_calls -> tool -> assistant`
+2. Validar persistencia en Firestore (`request_id`, `created_at_ms`, `name`) y ausencia de tool results huérfanos
+3. Cerrar Fase 2 (Memory improvements) y marcar estado final
