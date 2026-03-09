@@ -347,6 +347,123 @@ export async function getRecentErrorPatternsSummary(userId: number, limit: numbe
     ].join("\n");
 }
 
+// ── Task Execution State ───────────────────
+
+type TaskStepState = {
+    id: string;
+    text: string;
+    status: "pending" | "in_progress" | "completed" | "failed";
+    evidence?: string;
+};
+
+type TaskStateStatus = "active" | "completed" | "failed";
+
+export type TaskStateRecord = {
+    request_id: string;
+    objective: string;
+    plan_text: string;
+    phase: string;
+    steps: TaskStepState[];
+    status: TaskStateStatus;
+    created_at?: string;
+    updated_at?: string;
+    last_tool?: string;
+    evidence_log?: string[];
+    completion_summary?: string;
+};
+
+function toIsoString(value: unknown): string | undefined {
+    const anyValue = value as { toDate?: () => Date } | undefined;
+    if (anyValue?.toDate) return anyValue.toDate().toISOString();
+    if (typeof value === "string") return value;
+    return undefined;
+}
+
+function mapTaskState(doc: admin.firestore.DocumentSnapshot): TaskStateRecord | null {
+    if (!doc.exists) return null;
+    const data = doc.data() || {};
+    return {
+        request_id: String(data.request_id || doc.id),
+        objective: String(data.objective || ""),
+        plan_text: String(data.plan_text || ""),
+        phase: String(data.phase || ""),
+        steps: Array.isArray(data.steps) ? data.steps as TaskStepState[] : [],
+        status: (data.status as TaskStateStatus) || "active",
+        created_at: toIsoString(data.created_at),
+        updated_at: toIsoString(data.updated_at),
+        last_tool: data.last_tool ? String(data.last_tool) : undefined,
+        evidence_log: Array.isArray(data.evidence_log) ? data.evidence_log.map((entry: unknown) => String(entry)) : undefined,
+        completion_summary: data.completion_summary ? String(data.completion_summary) : undefined,
+    };
+}
+
+export async function saveTaskState(
+    userId: number,
+    requestId: string,
+    state: Omit<TaskStateRecord, "request_id" | "created_at" | "updated_at"> | TaskStateRecord
+): Promise<void> {
+    const docRef = db.collection("users").doc(userId.toString())
+        .collection("task_states").doc(requestId);
+    const existing = await docRef.get();
+
+    const payload: Record<string, unknown> = {
+        ...state,
+        request_id: requestId,
+        updated_at: admin.firestore.FieldValue.serverTimestamp(),
+    };
+
+    if (!existing.exists) {
+        payload.created_at = admin.firestore.FieldValue.serverTimestamp();
+    }
+
+    await docRef.set(payload, { merge: true });
+}
+
+export async function getTaskState(userId: number, requestId: string): Promise<TaskStateRecord | null> {
+    const doc = await db.collection("users").doc(userId.toString())
+        .collection("task_states").doc(requestId)
+        .get();
+    return mapTaskState(doc);
+}
+
+export async function getLatestActiveTaskState(userId: number): Promise<TaskStateRecord | null> {
+    const collectionRef = db.collection("users").doc(userId.toString())
+        .collection("task_states");
+
+    try {
+        const snapshot = await collectionRef
+            .where("status", "==", "active")
+            .orderBy("updated_at", "desc")
+            .limit(1)
+            .get();
+
+        if (snapshot.empty) return null;
+        return mapTaskState(snapshot.docs[0]);
+    } catch {
+        // Fallback for missing composite index: fetch recent states and filter client-side.
+        const snapshot = await collectionRef
+            .orderBy("updated_at", "desc")
+            .limit(20)
+            .get();
+
+        const activeDoc = snapshot.docs.find((doc) => String(doc.data()?.status || "") === "active");
+        return activeDoc ? mapTaskState(activeDoc) : null;
+    }
+}
+
+export async function markTaskStateCompleted(userId: number, requestId: string, summary?: string): Promise<void> {
+    const docRef = db.collection("users").doc(userId.toString())
+        .collection("task_states").doc(requestId);
+
+    await docRef.set({
+        request_id: requestId,
+        status: "completed",
+        phase: "closed",
+        completion_summary: summary,
+        updated_at: admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true });
+}
+
 // ── User Rules ──────────────────────────────
 
 /**
