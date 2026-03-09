@@ -160,6 +160,118 @@ export async function getMemorySummary(userId: number): Promise<string> {
     return summary.trim();
 }
 
+type SemanticMemoryMatch = {
+    id: string;
+    content: string;
+    source: string;
+    score: number;
+};
+
+const STOPWORDS = new Set([
+    "de", "la", "el", "los", "las", "un", "una", "y", "o", "que", "en", "con", "por", "para", "del",
+    "al", "se", "es", "su", "sus", "mi", "mis", "tu", "tus", "the", "a", "an", "is", "are", "to", "of", "and"
+]);
+
+function tokenizeForSemanticSearch(text: string): string[] {
+    return text
+        .toLowerCase()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/[^a-z0-9\s]/g, " ")
+        .split(/\s+/)
+        .map((t) => t.trim())
+        .filter((t) => t.length >= 3 && !STOPWORDS.has(t));
+}
+
+function semanticScore(queryTokens: string[], targetTokens: string[], targetText: string, queryText: string): number {
+    if (queryTokens.length === 0 || targetTokens.length === 0) return 0;
+    const q = new Set(queryTokens);
+    const t = new Set(targetTokens);
+    let common = 0;
+    q.forEach((token) => {
+        if (t.has(token)) common++;
+    });
+    const overlapQ = common / q.size;
+    const overlapT = common / t.size;
+    const phraseBonus = targetText.toLowerCase().includes(queryText.toLowerCase()) ? 0.2 : 0;
+    return overlapQ * 0.65 + overlapT * 0.35 + phraseBonus;
+}
+
+/**
+ * Save an unstructured semantic memory snippet for later similarity retrieval.
+ */
+export async function saveSemanticMemory(
+    userId: number,
+    content: string,
+    source: string = "conversation"
+): Promise<void> {
+    const normalized = content.trim();
+    if (normalized.length < 12) return;
+
+    const tokens = tokenizeForSemanticSearch(normalized).slice(0, 40);
+    if (tokens.length === 0) return;
+
+    await db.collection("users").doc(userId.toString())
+        .collection("semantic_memories")
+        .add({
+            content: normalized.slice(0, 1200),
+            source,
+            tokens,
+            created_at: admin.firestore.FieldValue.serverTimestamp(),
+            updated_at: admin.firestore.FieldValue.serverTimestamp(),
+        });
+}
+
+/**
+ * Search semantically similar memory snippets using token-overlap scoring.
+ * This is a lightweight semantic layer without external vector dependencies.
+ */
+export async function searchSemanticMemories(
+    userId: number,
+    query: string,
+    limit: number = 5
+): Promise<SemanticMemoryMatch[]> {
+    const queryTokens = tokenizeForSemanticSearch(query);
+    if (queryTokens.length === 0) return [];
+
+    const snapshot = await db.collection("users").doc(userId.toString())
+        .collection("semantic_memories")
+        .orderBy("updated_at", "desc")
+        .limit(200)
+        .get();
+
+    if (snapshot.empty) return [];
+
+    const scored = snapshot.docs.map((doc) => {
+        const data = doc.data();
+        const content = String(data.content || "");
+        const source = String(data.source || "conversation");
+        const tokens = Array.isArray(data.tokens) ? data.tokens.map((t: unknown) => String(t)) : tokenizeForSemanticSearch(content);
+        const score = semanticScore(queryTokens, tokens, content, query);
+        return { id: doc.id, content, source, score };
+    });
+
+    return scored
+        .filter((row) => row.score >= 0.22)
+        .sort((a, b) => b.score - a.score)
+        .slice(0, limit);
+}
+
+/**
+ * Build semantic context block for prompt injection.
+ */
+export async function getSemanticContext(userId: number, query: string, limit: number = 5): Promise<string> {
+    const matches = await searchSemanticMemories(userId, query, limit);
+    if (matches.length === 0) return "";
+
+    const lines = matches.map((m, i) => `${i + 1}. (${m.source}, score=${m.score.toFixed(2)}) ${m.content}`);
+    return [
+        "### MEMORIA SEMANTICA RELACIONADA",
+        "Usa este contexto solo si aporta valor a la respuesta actual.",
+        ...lines,
+    ].join("\n");
+}
+
 function normalizeErrorSignature(raw: string): string {
     return raw
         .toLowerCase()
