@@ -30,7 +30,7 @@ const envSchema = z.object({
     OPENROUTER_API_KEY: z.string().default(""),
     OPENROUTER_MODEL: z
         .string()
-        .default("google/gemini-2.0-pro-exp-02-05:free"),
+        .default("meta-llama/llama-3.3-70b-instruct:free"),
 
     // Kimi (another LLM option)
     KIMI_API_KEY: z.string().default(""),
