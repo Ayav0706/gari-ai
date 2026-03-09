@@ -280,7 +280,18 @@ export function createLLMProvider(): LLMProvider {
 
     // 3. OpenRouter (Final fallback)
     if (config.OPENROUTER_API_KEY) {
-        providers.push(new OpenRouterProvider(config.OPENROUTER_API_KEY, config.OPENROUTER_MODEL));
+        const freeFallbackModel = "meta-llama/llama-3.3-70b-instruct:free";
+        const configuredModel = config.OPENROUTER_MODEL?.trim() || freeFallbackModel;
+        const safeModel = configuredModel.endsWith(":free") ? configuredModel : freeFallbackModel;
+
+        if (configuredModel !== safeModel) {
+            logger.warn("OPENROUTER_MODEL is not free. Falling back to a free model.", {
+                configuredModel,
+                safeModel,
+            });
+        }
+
+        providers.push(new OpenRouterProvider(config.OPENROUTER_API_KEY, safeModel));
     }
 
     const chainNames = providers.map(p => p.name).join(" \u2192 ");
