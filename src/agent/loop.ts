@@ -77,53 +77,103 @@ async function buildGdpChartReplyFromWorldBank(
     toolRegistry: ToolRegistry,
     userId: number
 ): Promise<string | null> {
-    const indicator = "NY.GDP.MKTP.KD"; // GDP (constant 2015 US$) => real GDP
-    const url = `https://api.worldbank.org/v2/country/${intent.countryCode}/indicator/${indicator}?format=json&per_page=70`;
-    const response = await fetch(url);
-    if (!response.ok) return null;
+    const indicatorReal = "NY.GDP.MKTP.KD"; // GDP (constant 2015 US$) => real GDP
+    const indicatorNominal = "NY.GDP.MKTP.CD"; // GDP (current US$) => nominal GDP
 
-    const payload = await response.json() as unknown;
-    if (!Array.isArray(payload) || payload.length < 2 || !Array.isArray(payload[1])) return null;
+    const fetchIndicator = async (indicator: string): Promise<Array<{ year: number; valueBn: number }>> => {
+        const url = `https://api.worldbank.org/v2/country/${intent.countryCode}/indicator/${indicator}?format=json&per_page=80`;
+        const response = await fetch(url);
+        if (!response.ok) return [];
+        const payload = await response.json() as unknown;
+        if (!Array.isArray(payload) || payload.length < 2 || !Array.isArray(payload[1])) return [];
+        const rows = payload[1] as Array<{ date?: string; value?: number | null }>;
+        return rows
+            .filter((r) => r.value !== null && r.value !== undefined && r.date)
+            .map((r) => ({
+                year: Number(r.date),
+                valueBn: Number((Number(r.value) / 1_000_000_000).toFixed(2)),
+            }))
+            .filter((r) => Number.isFinite(r.year) && Number.isFinite(r.valueBn))
+            .sort((a, b) => a.year - b.year);
+    };
 
-    const rows = payload[1] as Array<{ date?: string; value?: number | null }>;
-    const points = rows
-        .filter((r) => r.value !== null && r.value !== undefined && r.date)
-        .map((r) => ({
-            year: Number(r.date),
-            valueBn: Number((Number(r.value) / 1_000_000_000).toFixed(2)),
-        }))
-        .filter((r) => Number.isFinite(r.year) && Number.isFinite(r.valueBn))
+    const [realPoints, nominalPoints] = await Promise.all([
+        fetchIndicator(indicatorReal),
+        fetchIndicator(indicatorNominal),
+    ]);
+
+    if (realPoints.length < 8 || nominalPoints.length < 8) return null;
+
+    const nominalByYear = new Map<number, number>(nominalPoints.map((p) => [p.year, p.valueBn]));
+    const merged = realPoints
+        .filter((p) => nominalByYear.has(p.year))
+        .map((p) => ({ year: p.year, realBn: p.valueBn, nominalBn: nominalByYear.get(p.year)! }))
         .sort((a, b) => a.year - b.year);
 
-    if (points.length < 5) return null;
+    if (merged.length < 8) return null;
 
-    const sliced = points.slice(-intent.years);
+    const sliced = merged.slice(-intent.years);
     const labels = sliced.map((p) => String(p.year));
-    const values = sliced.map((p) => p.valueBn);
+    const realValues = sliced.map((p) => p.realBn);
+    const nominalValues = sliced.map((p) => p.nominalBn);
+
+    const getYearValue = (year: number): number | undefined => {
+        const hit = sliced.find((p) => p.year === year);
+        return hit?.realBn;
+    };
 
     const chartResult = await toolRegistry.execute(
         "generate_chart",
         JSON.stringify({
             chart_type: "line",
-            title: `PIB real de ${intent.countryName} (${labels[0]}-${labels[labels.length - 1]})`,
+            title: `Producto Interno Bruto (PIB) de ${intent.countryName}: Real vs Nominal (${labels[0]}-${labels[labels.length - 1]})`,
+            subtitle: "Análisis de evolución económica por periodos",
             labels,
-            values,
-            dataset_label: "PIB real (miles de millones USD constantes 2015)",
+            datasets: [
+                {
+                    label: "PIB Nominal (USD corrientes)",
+                    values: nominalValues,
+                    borderColor: "#2b90c8",
+                    backgroundColor: "rgba(43,144,200,0.18)",
+                    pointRadius: 1.6,
+                },
+                {
+                    label: "PIB Real (USD constantes 2015)",
+                    values: realValues,
+                    borderColor: "#b03277",
+                    backgroundColor: "rgba(176,50,119,0.16)",
+                    pointRadius: 1.6,
+                },
+            ],
+            y_axis_label: "Miles de millones de USD",
+            style_preset: "economic_report",
+            regions: [
+                { start_label: "1970", end_label: "1982", color: "rgba(255,223,93,0.20)", label: "Boom petrolero", draw_label: true },
+                { start_label: "1982", end_label: "1991", color: "rgba(207,216,220,0.30)", label: "Década perdida", draw_label: true },
+                { start_label: "1998", end_label: "2000", color: "rgba(239,68,68,0.25)", label: "Crisis financiera", draw_label: true },
+                { start_label: "2007", end_label: "2014", color: "rgba(74,222,128,0.23)", label: "Boom commodities", draw_label: true },
+            ],
+            point_annotations: [
+                ...(getYearValue(1972) ? [{ x_label: "1972", y: getYearValue(1972), label: "Inicio boom petrolero", color: "rgba(15,23,42,0.78)" }] : []),
+                ...(getYearValue(1999) ? [{ x_label: "1999", y: getYearValue(1999), label: "Crisis y dolarización", color: "rgba(127,29,29,0.85)" }] : []),
+                ...(getYearValue(2009) ? [{ x_label: "2009", y: getYearValue(2009), label: "Crisis global", color: "rgba(30,41,59,0.82)" }] : []),
+                ...(getYearValue(2020) ? [{ x_label: "2020", y: getYearValue(2020), label: "COVID-19", color: "rgba(100,116,139,0.86)" }] : []),
+            ],
         }),
         { userId }
     );
 
     if (!chartResult || chartResult.startsWith("Error")) return null;
 
-    const latest = values[values.length - 1];
-    const first = values[0];
+    const latest = realValues[realValues.length - 1];
+    const first = realValues[0];
     const trend = latest >= first ? "creciente" : "decreciente";
 
     return `${chartResult}
 
-Aquí tienes la gráfica del PIB real de ${intent.countryName} para los últimos ${sliced.length} años.
+Aquí tienes la gráfica comparativa del PIB real y nominal de ${intent.countryName} para los últimos ${sliced.length} años.
 Tendencia general: ${trend} (${first} → ${latest} miles de millones, USD constantes 2015).
-Fuente: Banco Mundial (indicador ${indicator}).`;
+Fuente: Banco Mundial (indicadores ${indicatorReal} y ${indicatorNominal}).`;
 }
 
 /** Rough token estimate: 1 token ≈ 4 chars for English/Spanish mixed text */
@@ -131,29 +181,89 @@ function estimateTokens(text: string | null): number {
     return text ? Math.ceil(text.length / 4) : 0;
 }
 
-/** Trim message history to fit within token budget, always keeping system + latest user. */
-function trimMessages(messages: LLMMessage[], budget: number): LLMMessage[] {
-    let totalTokens = messages.reduce((sum, m) => sum + estimateTokens(m.content), 0);
-    if (totalTokens <= budget) return messages;
+type MessageBlock = {
+    messages: LLMMessage[];
+    tokenCost: number;
+    mandatory: boolean;
+};
 
-    // Strategy: remove oldest non-system messages until under budget
-    const trimmed = [messages[0]]; // always keep system prompt
+/**
+ * Trim message history while preserving tool-call integrity.
+ * Assistant messages with `tool_calls` are kept/dropped together with their tool outputs.
+ */
+function trimMessages(messages: LLMMessage[], budget: number): LLMMessage[] {
+    const totalTokens = messages.reduce((sum, m) => sum + estimateTokens(m.content), 0);
+    if (totalTokens <= budget || messages.length <= 2) return messages;
+
+    const system = messages[0];
     const rest = messages.slice(1);
 
-    // Keep removing from the front (oldest) until we're under budget
+    const blocks: MessageBlock[] = [];
+    let i = 0;
+    while (i < rest.length) {
+        const current = rest[i];
+        const group: LLMMessage[] = [current];
+        const calledIds = new Set((current.tool_calls ?? []).map((call) => call.id));
+
+        if (current.role === "assistant" && calledIds.size > 0) {
+            let j = i + 1;
+            while (j < rest.length) {
+                const candidate = rest[j];
+                if (candidate.role !== "tool") break;
+                if (candidate.tool_call_id && calledIds.has(candidate.tool_call_id)) {
+                    group.push(candidate);
+                    j++;
+                    continue;
+                }
+                break;
+            }
+            i = j;
+        } else {
+            i++;
+        }
+
+        const tokenCost = group.reduce((sum, m) => sum + estimateTokens(m.content), 0);
+        blocks.push({ messages: group, tokenCost, mandatory: false });
+    }
+
+    const latestUserIndex = (() => {
+        for (let idx = blocks.length - 1; idx >= 0; idx--) {
+            if (blocks[idx].messages.some((m) => m.role === "user")) return idx;
+        }
+        return -1;
+    })();
+
+    if (latestUserIndex >= 0) blocks[latestUserIndex].mandatory = true;
+    if (blocks.length > 0) blocks[blocks.length - 1].mandatory = true;
+
+    const keep = blocks.map(() => true);
+    let currentTokens = totalTokens;
     let dropped = 0;
-    while (rest.length > 1 && totalTokens > budget) {
-        const removed = rest.shift()!;
-        totalTokens -= estimateTokens(removed.content);
-        dropped++;
+
+    for (let idx = 0; idx < blocks.length && currentTokens > budget; idx++) {
+        if (blocks[idx].mandatory) continue;
+        keep[idx] = false;
+        currentTokens -= blocks[idx].tokenCost;
+        dropped += blocks[idx].messages.length;
+    }
+
+    const keptMessages = [system];
+    for (let idx = 0; idx < blocks.length; idx++) {
+        if (!keep[idx]) continue;
+        keptMessages.push(...blocks[idx].messages);
     }
 
     if (dropped > 0) {
-        logger.debug(`Context trimmed: dropped ${dropped} old messages to fit ${budget} token budget`);
+        logger.debug(`Context trimmed (tool-aware): dropped ${dropped} messages to fit ${budget} token budget`);
+    }
+    if (currentTokens > budget) {
+        logger.warn("Context still above budget after tool-aware trimming; continuing with minimum safe context.", {
+            budget,
+            estimatedTokens: currentTokens,
+        });
     }
 
-    trimmed.push(...rest);
-    return trimmed;
+    return keptMessages;
 }
 
 function normalizeLegacyToolName(name: string): string {
@@ -427,6 +537,8 @@ export async function runAgentLoop(
     llm: LLMProvider,
     toolRegistry: ToolRegistry
 ): Promise<string> {
+    const requestId = `req-${userId}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+
     // Build conversation context with dynamic temporal info + user memories
     const memorySummary = await getMemorySummary(userId);
     const recurrentErrorsSummary = await getRecentErrorPatternsSummary(userId);
@@ -464,7 +576,7 @@ export async function runAgentLoop(
 
     let order = 0;
     // Save user message to history
-    await saveConversationMessage(userId, "user", userMessage, undefined, undefined, order++);
+    await saveConversationMessage(userId, "user", userMessage, undefined, undefined, order++, requestId);
     if (shouldSaveSemanticMemory(userMessage)) {
         saveSemanticMemory(userId, userMessage, "user_message")
             .catch((error) => logger.warn("Could not save semantic memory", {
@@ -489,7 +601,12 @@ export async function runAgentLoop(
         try {
             const forcedChartReply = await buildGdpChartReplyFromWorldBank(gdpChartIntent, toolRegistry, userId);
             if (forcedChartReply) {
-                await saveConversationMessage(userId, "assistant", forcedChartReply, undefined, undefined, order++);
+                await saveConversationMessage(userId, "assistant", forcedChartReply, undefined, undefined, order++, requestId);
+                saveSemanticMemory(userId, forcedChartReply, "assistant_reply")
+                    .catch((error) => logger.warn("Could not save assistant semantic memory", {
+                        userId,
+                        error: error instanceof Error ? error.message : String(error),
+                    }));
                 manageConversationSize(userId, llm).catch(err => logger.error("Pruning error:", err));
                 return forcedChartReply;
             }
@@ -524,7 +641,7 @@ export async function runAgentLoop(
             // Add assistant message with tool calls to context
             messages.push(message);
             // PERSIST: Assistant tool calls
-            await saveConversationMessage(userId, "assistant", message.content, message.tool_calls, undefined, order++);
+            await saveConversationMessage(userId, "assistant", message.content, message.tool_calls, undefined, order++, requestId);
 
             // Execute each tool call
             for (const toolCall of message.tool_calls) {
@@ -545,7 +662,16 @@ export async function runAgentLoop(
                 // Add tool result to context
                 messages.push(toolMessage);
                 // PERSIST: Tool result
-                await saveConversationMessage(userId, "tool", result, undefined, toolCall.id, order++);
+                await saveConversationMessage(
+                    userId,
+                    "tool",
+                    result,
+                    undefined,
+                    toolCall.id,
+                    order++,
+                    requestId,
+                    toolCall.function.name
+                );
             }
 
             // Continue the loop so the LLM can process the tool results
@@ -590,8 +716,17 @@ export async function runAgentLoop(
             messages.push(assistantLegacyMessage);
             messages.push(toolMessage);
 
-            await saveConversationMessage(userId, "assistant", null, assistantLegacyMessage.tool_calls, undefined, order++);
-            await saveConversationMessage(userId, "tool", result, undefined, syntheticToolCallId, order++);
+            await saveConversationMessage(userId, "assistant", null, assistantLegacyMessage.tool_calls, undefined, order++, requestId);
+            await saveConversationMessage(
+                userId,
+                "tool",
+                result,
+                undefined,
+                syntheticToolCallId,
+                order++,
+                requestId,
+                legacyCall.toolName
+            );
             continue;
         }
 
@@ -601,7 +736,12 @@ export async function runAgentLoop(
         const reply = await verifyAndRepairReply(llm, fullSystemPrompt, userMessage, criticReply);
 
         // Save final assistant reply to history
-        await saveConversationMessage(userId, "assistant", reply, undefined, undefined, order++);
+        await saveConversationMessage(userId, "assistant", reply, undefined, undefined, order++, requestId);
+        saveSemanticMemory(userId, reply, "assistant_reply")
+            .catch((error) => logger.warn("Could not save assistant semantic memory", {
+                userId,
+                error: error instanceof Error ? error.message : String(error),
+            }));
 
         // Prune conversation if needed (background/async)
         manageConversationSize(userId, llm).catch(err => logger.error("Pruning error:", err));
@@ -611,7 +751,7 @@ export async function runAgentLoop(
 
     // Max iterations reached — safety escape
     const timeoutMsg = "⚠️ He alcanzado el límite de pasos para procesar esta solicitud. ¿Puedes reformular tu pregunta?";
-    await saveConversationMessage(userId, "assistant", timeoutMsg, undefined, undefined, order++);
+    await saveConversationMessage(userId, "assistant", timeoutMsg, undefined, undefined, order++, requestId);
     logger.warn(`Agent loop reached max iterations (${MAX_ITERATIONS}) for user ${userId}`);
     return timeoutMsg;
 }
