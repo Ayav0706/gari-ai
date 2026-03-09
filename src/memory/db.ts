@@ -427,16 +427,21 @@ export async function saveConversationMessage(
     content: string | null,
     tool_calls?: LLMToolCall[],
     tool_call_id?: string,
-    order: number = 0
+    order: number = 0,
+    request_id?: string,
+    name?: string
 ): Promise<void> {
     const data: any = {
         role,
         content,
         timestamp: admin.firestore.FieldValue.serverTimestamp(),
+        created_at_ms: Date.now(),
         order
     };
     if (tool_calls) data.tool_calls = tool_calls;
     if (tool_call_id) data.tool_call_id = tool_call_id;
+    if (request_id) data.request_id = request_id;
+    if (name) data.name = name;
 
     await db.collection('users').doc(userId.toString())
         .collection('conversations')
@@ -450,22 +455,44 @@ export async function getRecentMessages(
     const snapshot = await db.collection('users').doc(userId.toString())
         .collection('conversations')
         .orderBy('timestamp', 'desc')
-        .limit(limit)
+        .limit(Math.max(limit * 4, 60))
         .get();
 
-    // Read them in desc order from DB, but we need asc order for the LLM prompt.
-    const messages = snapshot.docs.map(doc => {
+    const rows = snapshot.docs.map((doc) => {
         const data = doc.data();
-        const msg: LLMMessage = {
-            role: data.role as any,
-            content: data.content
+        const serverMs = data.timestamp?.toMillis?.();
+        return {
+            docId: doc.id,
+            role: data.role,
+            content: data.content,
+            tool_calls: data.tool_calls,
+            tool_call_id: data.tool_call_id,
+            name: data.name,
+            tsMs: Number.isFinite(serverMs) ? Number(serverMs) : Number(data.created_at_ms || 0),
+            createdAtMs: Number(data.created_at_ms || 0),
+            order: Number(data.order || 0),
+            requestId: typeof data.request_id === "string" ? data.request_id : "",
         };
-        if (data.tool_calls) msg.tool_calls = data.tool_calls;
-        if (data.tool_call_id) msg.tool_call_id = data.tool_call_id;
-        return msg;
     });
 
-    return messages.reverse();
+    rows.sort((a, b) => {
+        if (a.tsMs !== b.tsMs) return a.tsMs - b.tsMs;
+        if (a.requestId !== b.requestId) return a.requestId.localeCompare(b.requestId);
+        if (a.order !== b.order) return a.order - b.order;
+        if (a.createdAtMs !== b.createdAtMs) return a.createdAtMs - b.createdAtMs;
+        return a.docId.localeCompare(b.docId);
+    });
+
+    return rows.slice(-limit).map((row) => {
+        const msg: LLMMessage = {
+            role: row.role as any,
+            content: row.content
+        };
+        if (row.tool_calls) msg.tool_calls = row.tool_calls;
+        if (row.tool_call_id) msg.tool_call_id = row.tool_call_id;
+        if (row.name) msg.name = row.name;
+        return msg;
+    });
 }
 
 /**
