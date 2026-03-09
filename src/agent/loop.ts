@@ -9,8 +9,11 @@ import {
     getMemorySummary,
     getRecentErrorPatternsSummary,
     getRecentMessages,
+    getLatestActiveTaskState,
     getSemanticContext,
+    markTaskStateCompleted,
     saveConversationMessage,
+    saveTaskState,
     saveSemanticMemory
 } from "../memory/db.js";
 import { manageConversationSize } from "../memory/pruning.js";
@@ -48,6 +51,24 @@ type GdpChartIntent = {
     countryCode: string;
     countryName: string;
     years: number;
+};
+
+type TaskStepState = {
+    id: string;
+    text: string;
+    status: "pending" | "in_progress" | "completed" | "failed";
+    evidence?: string;
+};
+
+type TaskStateSnapshot = {
+    request_id: string;
+    objective: string;
+    plan_text: string;
+    phase: string;
+    status: "active" | "completed" | "failed";
+    steps: TaskStepState[];
+    last_tool?: string;
+    evidence_log?: string[];
 };
 
 function detectGdpChartIntent(userMessage: string): GdpChartIntent | null {
@@ -315,6 +336,48 @@ function needsExecutionPlan(userMessage: string): boolean {
     return markers.some((m) => text.includes(m));
 }
 
+function extractPlanSteps(planText: string): TaskStepState[] {
+    const lines = planText.split("\n").map((line) => line.trim());
+    const steps = lines
+        .filter((line) => /^\d+\)/.test(line))
+        .map((line, idx) => ({
+            id: `step-${idx + 1}`,
+            text: line.replace(/^\d+\)\s*/, "").trim(),
+            status: "pending" as const,
+        }));
+    return steps.slice(0, 8);
+}
+
+function markNextTaskStepInProgress(steps: TaskStepState[]): TaskStepState[] {
+    const nextPending = steps.find((s) => s.status === "pending");
+    if (!nextPending) return steps;
+    return steps.map((step) => {
+        if (step.id === nextPending.id) return { ...step, status: "in_progress" };
+        return step;
+    });
+}
+
+function completeCurrentTaskStep(steps: TaskStepState[], evidence: string): TaskStepState[] {
+    const current = steps.find((s) => s.status === "in_progress") ?? steps.find((s) => s.status === "pending");
+    if (!current) return steps;
+    return steps.map((step) => {
+        if (step.id === current.id) {
+            return { ...step, status: "completed", evidence: evidence.slice(0, 220) };
+        }
+        return step;
+    });
+}
+
+function allTaskStepsCompleted(steps: TaskStepState[]): boolean {
+    return steps.length > 0 && steps.every((s) => s.status === "completed");
+}
+
+function hasVerificationEvidence(text: string): boolean {
+    const lower = text.toLowerCase();
+    const markers = ["build", "test", "verific", "valid", "comprob", "resultado", "evidencia"];
+    return markers.some((m) => lower.includes(m));
+}
+
 async function createExecutionPlan(
     llm: LLMProvider,
     userMessage: string,
@@ -478,6 +541,57 @@ async function verifyAndRepairReply(
     }
 }
 
+async function enforceDeliveryGate(
+    llm: LLMProvider,
+    fullSystemPrompt: string,
+    userMessage: string,
+    draftReply: string,
+    context: { isCodingTask: boolean; toolEvidence: string[]; taskState: TaskStateSnapshot | null }
+): Promise<string> {
+    const shouldGate = context.isCodingTask || Boolean(context.taskState?.plan_text);
+    if (!shouldGate) return draftReply;
+
+    const hasEvidence = hasVerificationEvidence(draftReply) || context.toolEvidence.length > 0;
+    if (hasEvidence && draftReply.length > 30) return draftReply;
+
+    const gatePrompt = [
+        "Eres un verificador de entrega final para un agente ejecutor.",
+        "Debes mejorar la respuesta para incluir verificación real y estado de ejecución.",
+        "Formato obligatorio:",
+        "RESULTADO:",
+        "- ...",
+        "VERIFICACIÓN:",
+        "- Evidencia concreta (build/test/tool output)",
+        "SIGUIENTE PASO:",
+        "- Acción concreta",
+        "Reglas:",
+        "- No inventes ejecuciones.",
+        "- Si falta evidencia, dilo explícitamente y pide/propón una validación mínima.",
+        "- Español claro y breve.",
+    ].join("\n");
+
+    const verifierMessages: LLMMessage[] = [
+        { role: "system", content: `${fullSystemPrompt}\n\n${gatePrompt}` },
+        ...(context.taskState ? [{ role: "user" as const, content: `Estado de tarea actual:\n${JSON.stringify(context.taskState, null, 2)}` }] : []),
+        ...(context.toolEvidence.length > 0 ? [{ role: "user" as const, content: `Evidencia de herramientas:\n${context.toolEvidence.join("\n")}` }] : []),
+        { role: "user", content: `Solicitud original:\n${userMessage}` },
+        { role: "assistant", content: `Borrador:\n${draftReply}` },
+        { role: "user", content: "Entrega la versión final con gate de calidad." },
+    ];
+
+    try {
+        const reviewed = await llm.chat(verifierMessages, undefined);
+        const gated = reviewed.message.content?.trim();
+        if (!gated) return draftReply;
+        return gated;
+    } catch (error) {
+        logger.warn("Delivery gate failed; returning draft reply.", {
+            error: error instanceof Error ? error.message : String(error),
+        });
+        return draftReply;
+    }
+}
+
 const SYSTEM_PROMPT = `Eres **Gari**, un Senior AI Partner proactivo y autónomo. No eres un chatbot pasivo — eres un compañero de ejecución que se anticipa, investiga, y resuelve.
 
 ## Filosofía de Operación
@@ -508,6 +622,8 @@ Antes de responder preguntas complejas, piensa paso a paso internamente:
 6. Si la tarea es de programación, aplica skills técnicas antes de ejecutar (brainstorming, TDD, debugging).
 7. Si el usuario pide una gráfica/chart, debes intentar usar \`generate_chart\` antes de responder con texto.
 8. Nunca digas que "no puedes generar gráficas en tiempo real" sin intentar \`generate_chart\`.
+9. Para tareas complejas, trabaja por fases (planificar → ejecutar → verificar → cerrar) y reporta el estado.
+10. No declares éxito en tareas técnicas sin evidencia de verificación (tests/build/salida de herramienta).
 
 ## Herramientas Disponibles
 search_web, search_wikipedia, google_workspace, manage_coding_skills, get_current_time, read_url, run_code, get_weather, generate_image, generate_chart, deep_research, manage_reminders, execute_shell_command, read_file, write_file.`;
@@ -538,14 +654,33 @@ export async function runAgentLoop(
     toolRegistry: ToolRegistry
 ): Promise<string> {
     const requestId = `req-${userId}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    const toolEvidence: string[] = [];
 
     // Build conversation context with dynamic temporal info + user memories
     const memorySummary = await getMemorySummary(userId);
     const recurrentErrorsSummary = await getRecentErrorPatternsSummary(userId);
     const semanticContext = await getSemanticContext(userId, userMessage, 5);
-    const executionPlan = needsExecutionPlan(userMessage)
+    const isComplexTask = needsExecutionPlan(userMessage);
+    const executionPlan = isComplexTask
         ? await createExecutionPlan(llm, userMessage, semanticContext)
         : "";
+    const resumedTaskState = isComplexTask ? await getLatestActiveTaskState(userId) : null;
+    const executionSteps = executionPlan ? extractPlanSteps(executionPlan) : [];
+    let taskState: TaskStateSnapshot | null = executionPlan
+        ? {
+            request_id: requestId,
+            objective: userMessage.slice(0, 600),
+            plan_text: executionPlan,
+            phase: "planning",
+            status: "active",
+            steps: executionSteps,
+            evidence_log: [],
+        }
+        : null;
+
+    if (taskState) {
+        await saveTaskState(userId, requestId, taskState);
+    }
     const dynamicContext = buildDynamicContext();
     const memoryBlock = memorySummary
         ? `\n\n🧠 Información del usuario:\n${memorySummary}`
@@ -559,11 +694,14 @@ export async function runAgentLoop(
     const executionPlanBlock = executionPlan
         ? `\n\n🗺️ Plan interno de ejecución:\n${executionPlan}\nSigue este plan y ajusta si una herramienta falla.`
         : "";
+    const resumedTaskBlock = resumedTaskState
+        ? `\n\n📌 Estado de tarea previa activa:\nObjetivo: ${resumedTaskState.objective || "N/A"}\nFase: ${resumedTaskState.phase || "N/A"}\nPlan:\n${resumedTaskState.plan_text || ""}`
+        : "";
     
     const rulesBlock = await getRulesSummary(userId);
     const skillsBlock = await buildSkillContext(userMessage);
 
-    const fullSystemPrompt = `${SYSTEM_PROMPT}${dynamicContext}${memoryBlock}${semanticBlock}${executionPlanBlock}${recurrentErrorsBlock}${rulesBlock}${skillsBlock}`;
+    const fullSystemPrompt = `${SYSTEM_PROMPT}${dynamicContext}${memoryBlock}${semanticBlock}${executionPlanBlock}${resumedTaskBlock}${recurrentErrorsBlock}${rulesBlock}${skillsBlock}`;
 
     const messages: LLMMessage[] = [{ role: "system", content: fullSystemPrompt }];
 
@@ -607,6 +745,13 @@ export async function runAgentLoop(
                         userId,
                         error: error instanceof Error ? error.message : String(error),
                     }));
+                if (taskState) {
+                    taskState.phase = "closed";
+                    taskState.status = "completed";
+                    taskState.evidence_log = [...(taskState.evidence_log || []), "chart fast-path applied"].slice(-12);
+                    await saveTaskState(userId, requestId, taskState);
+                    await markTaskStateCompleted(userId, requestId, forcedChartReply.slice(0, 280));
+                }
                 manageConversationSize(userId, llm).catch(err => logger.error("Pruning error:", err));
                 return forcedChartReply;
             }
@@ -621,6 +766,11 @@ export async function runAgentLoop(
     // ── ReAct Loop ──────────────────────────────
     for (let iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
         logger.debug(`Agent loop iteration ${iteration + 1}/${MAX_ITERATIONS}`);
+        if (taskState) {
+            taskState.phase = "execution";
+            taskState.steps = markNextTaskStepInProgress(taskState.steps);
+            await saveTaskState(userId, requestId, taskState);
+        }
 
         // Trim context if it's getting too large
         const trimmedMessages = trimMessages(messages, MAX_CONTEXT_TOKENS);
@@ -651,6 +801,13 @@ export async function runAgentLoop(
                     toolCall.function.arguments,
                     { userId }
                 );
+                toolEvidence.push(`${toolCall.function.name}: ${result.slice(0, 180)}`);
+                if (taskState) {
+                    taskState.last_tool = toolCall.function.name;
+                    taskState.evidence_log = [...(taskState.evidence_log || []), `${toolCall.function.name}: ${result.slice(0, 180)}`].slice(-12);
+                    taskState.steps = completeCurrentTaskStep(taskState.steps, `tool:${toolCall.function.name}`);
+                    await saveTaskState(userId, requestId, taskState);
+                }
 
                 const toolMessage: LLMMessage = {
                     role: "tool",
@@ -692,6 +849,13 @@ export async function runAgentLoop(
                 legacyCall.argsJson,
                 { userId }
             );
+            toolEvidence.push(`${legacyCall.toolName}: ${result.slice(0, 180)}`);
+            if (taskState) {
+                taskState.last_tool = legacyCall.toolName;
+                taskState.evidence_log = [...(taskState.evidence_log || []), `${legacyCall.toolName}: ${result.slice(0, 180)}`].slice(-12);
+                taskState.steps = completeCurrentTaskStep(taskState.steps, `tool:${legacyCall.toolName}`);
+                await saveTaskState(userId, requestId, taskState);
+            }
 
             const assistantLegacyMessage: LLMMessage = {
                 role: "assistant",
@@ -733,7 +897,19 @@ export async function runAgentLoop(
         // LLM returned a text response → we're done
         const draftReply = message.content ?? "🤔 No tengo una respuesta en este momento.";
         const criticReply = await runCriticPass(llm, fullSystemPrompt, userMessage, draftReply);
-        const reply = await verifyAndRepairReply(llm, fullSystemPrompt, userMessage, criticReply);
+        const repairedReply = await verifyAndRepairReply(llm, fullSystemPrompt, userMessage, criticReply);
+        if (taskState) {
+            taskState.phase = "verification";
+            if (taskState.steps.length > 0 && !allTaskStepsCompleted(taskState.steps)) {
+                taskState.steps = completeCurrentTaskStep(taskState.steps, "verificación final");
+            }
+            await saveTaskState(userId, requestId, taskState);
+        }
+        const reply = await enforceDeliveryGate(llm, fullSystemPrompt, userMessage, repairedReply, {
+            isCodingTask: detectCodingIntent(userMessage),
+            toolEvidence,
+            taskState,
+        });
 
         // Save final assistant reply to history
         await saveConversationMessage(userId, "assistant", reply, undefined, undefined, order++, requestId);
@@ -742,6 +918,13 @@ export async function runAgentLoop(
                 userId,
                 error: error instanceof Error ? error.message : String(error),
             }));
+        if (taskState) {
+            taskState.phase = "closed";
+            taskState.status = "completed";
+            taskState.evidence_log = [...(taskState.evidence_log || []), `reply: ${reply.slice(0, 180)}`].slice(-12);
+            await saveTaskState(userId, requestId, taskState);
+            await markTaskStateCompleted(userId, requestId, reply.slice(0, 300));
+        }
 
         // Prune conversation if needed (background/async)
         manageConversationSize(userId, llm).catch(err => logger.error("Pruning error:", err));
@@ -752,6 +935,13 @@ export async function runAgentLoop(
     // Max iterations reached — safety escape
     const timeoutMsg = "⚠️ He alcanzado el límite de pasos para procesar esta solicitud. ¿Puedes reformular tu pregunta?";
     await saveConversationMessage(userId, "assistant", timeoutMsg, undefined, undefined, order++, requestId);
+    if (taskState) {
+        taskState.phase = "timeout";
+        taskState.status = "failed";
+        taskState.evidence_log = [...(taskState.evidence_log || []), "timeout: max iterations reached"].slice(-12);
+        await saveTaskState(userId, requestId, taskState);
+        await markTaskStateCompleted(userId, requestId, timeoutMsg);
+    }
     logger.warn(`Agent loop reached max iterations (${MAX_ITERATIONS}) for user ${userId}`);
     return timeoutMsg;
 }
