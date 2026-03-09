@@ -46,6 +46,7 @@ const TELEGRAM_COMMANDS = [
     { command: "bot_start", description: "Reanudar respuestas del bot" },
 ] as const;
 const BOOT_TIME = Date.now();
+const AGENT_REQUEST_TIMEOUT_MS = 90_000;
 
 export async function registerTelegramCommands(bot: Bot): Promise<void> {
     try {
@@ -154,6 +155,15 @@ async function rememberRuntimeError(
             error: persistError instanceof Error ? persistError.message : String(persistError),
         });
     }
+}
+
+async function runAgentLoopWithDeadline<T>(work: Promise<T>, timeoutMs: number): Promise<T> {
+    return await Promise.race([
+        work,
+        new Promise<T>((_, reject) =>
+            setTimeout(() => reject(new Error(`AGENT_TIMEOUT_${Math.floor(timeoutMs / 1000)}s`)), timeoutMs)
+        ),
+    ]);
 }
 
 /**
@@ -523,7 +533,10 @@ export function createBot(llm: LLMProvider, toolRegistry: ToolRegistry): Bot {
         }, 4000);
 
         try {
-            const reply = await runAgentLoop(userMessage, userId, llm, toolRegistry);
+            const reply = await runAgentLoopWithDeadline(
+                runAgentLoop(userMessage, userId, llm, toolRegistry),
+                AGENT_REQUEST_TIMEOUT_MS
+            );
             await sendReplyWithChartSupport(ctx, reply);
         } catch (error) {
             const errMsg = error instanceof Error ? error.message : String(error);
@@ -581,7 +594,10 @@ export function createBot(llm: LLMProvider, toolRegistry: ToolRegistry): Bot {
             }, 4000);
 
             try {
-                const reply = await runAgentLoop(transcription, userId, llm, toolRegistry);
+                const reply = await runAgentLoopWithDeadline(
+                    runAgentLoop(transcription, userId, llm, toolRegistry),
+                    AGENT_REQUEST_TIMEOUT_MS
+                );
 
                 // Try to respond with audio if TTS is available
                 if (isTTSAvailable() && reply.length < 4500) {
@@ -620,7 +636,10 @@ export function createBot(llm: LLMProvider, toolRegistry: ToolRegistry): Bot {
             const enrichedMessage = `[El usuario envió una foto con el siguiente texto]: ${caption}`;
             const requestId = createRequestId();
             try {
-                const reply = await runAgentLoop(enrichedMessage, userId, llm, toolRegistry);
+                const reply = await runAgentLoopWithDeadline(
+                    runAgentLoop(enrichedMessage, userId, llm, toolRegistry),
+                    AGENT_REQUEST_TIMEOUT_MS
+                );
                 await sendReplyWithChartSupport(ctx, reply);
             } catch (error) {
                 logger.error("Error processing photo caption:", { requestId, error: String(error), userId });
@@ -648,7 +667,10 @@ export function createBot(llm: LLMProvider, toolRegistry: ToolRegistry): Bot {
             const enrichedMessage = `[El usuario envió un documento "${doc?.file_name || "archivo"}" con el texto]: ${caption}`;
             const requestId = createRequestId();
             try {
-                const reply = await runAgentLoop(enrichedMessage, userId, llm, toolRegistry);
+                const reply = await runAgentLoopWithDeadline(
+                    runAgentLoop(enrichedMessage, userId, llm, toolRegistry),
+                    AGENT_REQUEST_TIMEOUT_MS
+                );
                 await sendReplyWithChartSupport(ctx, reply);
             } catch (error) {
                 logger.error("Error processing document caption:", { requestId, error: String(error), userId });
