@@ -125,6 +125,9 @@ export interface ConversationMessage {
     content: string | null;
     tool_calls?: LLMToolCall[];
     tool_call_id?: string;
+    name?: string;
     timestamp: any; // Using any for Firestore timesamp compatibility
     order: number; // For stable ordering of multi-turn assistant/tool messages
+    request_id?: string;
+    created_at_ms?: number;
 }
