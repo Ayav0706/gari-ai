@@ -5,7 +5,14 @@
 // Injects user memories into context for personalization.
 
 import { logger } from "../logger.js";
-import { getMemorySummary, getRecentErrorPatternsSummary, getRecentMessages, saveConversationMessage } from "../memory/db.js";
+import {
+    getMemorySummary,
+    getRecentErrorPatternsSummary,
+    getRecentMessages,
+    getSemanticContext,
+    saveConversationMessage,
+    saveSemanticMemory
+} from "../memory/db.js";
 import { manageConversationSize } from "../memory/pruning.js";
 import type { LLMMessage, LLMProvider, ToolSchema } from "../types.js";
 import type { ToolRegistry } from "../tools/registry.js";
@@ -178,6 +185,15 @@ function detectCodingIntent(userMessage: string): boolean {
     return markers.some((marker) => text.includes(marker));
 }
 
+function shouldSaveSemanticMemory(userMessage: string): boolean {
+    const text = userMessage.trim();
+    if (text.length < 20) return false;
+    if (text.startsWith("/")) return false;
+    const lower = text.toLowerCase();
+    const lowSignal = ["hola", "ok", "gracias", "sí", "si", "no"];
+    return !lowSignal.includes(lower);
+}
+
 async function loadSkillSnippet(skillName: string): Promise<string | null> {
     try {
         const filePath = path.join(SKILLS_DIR, `${skillName}.md`);
@@ -313,6 +329,7 @@ export async function runAgentLoop(
     // Build conversation context with dynamic temporal info + user memories
     const memorySummary = await getMemorySummary(userId);
     const recurrentErrorsSummary = await getRecentErrorPatternsSummary(userId);
+    const semanticContext = await getSemanticContext(userId, userMessage, 5);
     const dynamicContext = buildDynamicContext();
     const memoryBlock = memorySummary
         ? `\n\n🧠 Información del usuario:\n${memorySummary}`
@@ -320,11 +337,14 @@ export async function runAgentLoop(
     const recurrentErrorsBlock = recurrentErrorsSummary
         ? `\n\n🚨 Lecciones de fallos previos:\n${recurrentErrorsSummary}`
         : "";
+    const semanticBlock = semanticContext
+        ? `\n\n🧩 Contexto semántico relevante:\n${semanticContext}`
+        : "";
     
     const rulesBlock = await getRulesSummary(userId);
     const skillsBlock = await buildSkillContext(userMessage);
 
-    const fullSystemPrompt = `${SYSTEM_PROMPT}${dynamicContext}${memoryBlock}${recurrentErrorsBlock}${rulesBlock}${skillsBlock}`;
+    const fullSystemPrompt = `${SYSTEM_PROMPT}${dynamicContext}${memoryBlock}${semanticBlock}${recurrentErrorsBlock}${rulesBlock}${skillsBlock}`;
 
     const messages: LLMMessage[] = [{ role: "system", content: fullSystemPrompt }];
 
@@ -338,6 +358,13 @@ export async function runAgentLoop(
     let order = 0;
     // Save user message to history
     await saveConversationMessage(userId, "user", userMessage, undefined, undefined, order++);
+    if (shouldSaveSemanticMemory(userMessage)) {
+        saveSemanticMemory(userId, userMessage, "user_message")
+            .catch((error) => logger.warn("Could not save semantic memory", {
+                userId,
+                error: error instanceof Error ? error.message : String(error),
+            }));
+    }
 
     // Get tool schemas
     const toolSchemas: ToolSchema[] = toolRegistry.getSchemas();
