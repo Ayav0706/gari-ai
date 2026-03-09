@@ -26,6 +26,7 @@ import { fileURLToPath } from "node:url";
 import { config } from "../config.js";
 
 const MAX_ITERATIONS = 10;
+const LLM_CALL_TIMEOUT_MS = 45_000;
 
 // Rough token budget — Groq's llama-3.3-70b has 128k context,
 // but we keep our context lean for speed & cost. 6000 tokens ≈ ~24k chars.
@@ -378,6 +379,19 @@ function hasVerificationEvidence(text: string): boolean {
     return markers.some((m) => lower.includes(m));
 }
 
+async function chatWithTimeout(
+    llm: LLMProvider,
+    messages: LLMMessage[],
+    tools?: ToolSchema[]
+) {
+    return await Promise.race([
+        llm.chat(messages, tools),
+        new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error(`LLM call timeout after ${LLM_CALL_TIMEOUT_MS / 1000}s`)), LLM_CALL_TIMEOUT_MS)
+        ),
+    ]);
+}
+
 async function createExecutionPlan(
     llm: LLMProvider,
     userMessage: string,
@@ -407,7 +421,7 @@ async function createExecutionPlan(
     ];
 
     try {
-        const response = await llm.chat(planningMessages, undefined);
+        const response = await chatWithTimeout(llm, planningMessages, undefined);
         const plan = response.message.content?.trim();
         if (!plan || !plan.toLowerCase().includes("plan")) return "";
         return plan.slice(0, 1400);
@@ -478,7 +492,7 @@ async function runCriticPass(
     ];
 
     try {
-        const reviewed = await llm.chat(criticMessages, undefined);
+        const reviewed = await chatWithTimeout(llm, criticMessages, undefined);
         if (reviewed.finish_reason === "tool_calls") return draftReply;
         const finalText = reviewed.message.content?.trim();
         if (!finalText) return draftReply;
@@ -529,7 +543,7 @@ async function verifyAndRepairReply(
     ];
 
     try {
-        const reviewed = await llm.chat(verifierMessages, undefined);
+        const reviewed = await chatWithTimeout(llm, verifierMessages, undefined);
         const repaired = reviewed.message.content?.trim();
         if (!repaired || repaired.includes("<function>")) return reply;
         return repaired;
@@ -580,7 +594,7 @@ async function enforceDeliveryGate(
     ];
 
     try {
-        const reviewed = await llm.chat(verifierMessages, undefined);
+        const reviewed = await chatWithTimeout(llm, verifierMessages, undefined);
         const gated = reviewed.message.content?.trim();
         if (!gated) return draftReply;
         return gated;
@@ -599,7 +613,7 @@ async function safeSaveTaskState(
 ): Promise<void> {
     if (!taskState) return;
     try {
-        await safeSaveTaskState(userId, requestId, taskState);
+        await saveTaskState(userId, requestId, taskState);
     } catch (error) {
         logger.warn("Task-state persistence failed; continuing without blocking response.", {
             userId,
@@ -817,7 +831,7 @@ export async function runAgentLoop(
 
         let response;
         try {
-            response = await llm.chat(trimmedMessages, toolSchemas);
+            response = await chatWithTimeout(llm, trimmedMessages, toolSchemas);
         } catch (error) {
             const errMsg = error instanceof Error ? error.message : String(error);
             logger.error("LLM call failed:", { error: errMsg });
