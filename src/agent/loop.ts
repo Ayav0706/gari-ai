@@ -592,6 +592,39 @@ async function enforceDeliveryGate(
     }
 }
 
+async function safeSaveTaskState(
+    userId: number,
+    requestId: string,
+    taskState: TaskStateSnapshot | null
+): Promise<void> {
+    if (!taskState) return;
+    try {
+        await safeSaveTaskState(userId, requestId, taskState);
+    } catch (error) {
+        logger.warn("Task-state persistence failed; continuing without blocking response.", {
+            userId,
+            requestId,
+            error: error instanceof Error ? error.message : String(error),
+        });
+    }
+}
+
+async function safeMarkTaskCompleted(
+    userId: number,
+    requestId: string,
+    summary: string
+): Promise<void> {
+    try {
+        await markTaskStateCompleted(userId, requestId, summary.slice(0, 300));
+    } catch (error) {
+        logger.warn("Task-state completion mark failed; continuing.", {
+            userId,
+            requestId,
+            error: error instanceof Error ? error.message : String(error),
+        });
+    }
+}
+
 const SYSTEM_PROMPT = `Eres **Gari**, un Senior AI Partner proactivo y autónomo. No eres un chatbot pasivo — eres un compañero de ejecución que se anticipa, investiga, y resuelve.
 
 ## Filosofía de Operación
@@ -664,7 +697,16 @@ export async function runAgentLoop(
     const executionPlan = isComplexTask
         ? await createExecutionPlan(llm, userMessage, semanticContext)
         : "";
-    const resumedTaskState = isComplexTask ? await getLatestActiveTaskState(userId) : null;
+    const resumedTaskState = isComplexTask
+        ? await getLatestActiveTaskState(userId).catch((error) => {
+            logger.warn("Could not load latest active task-state; proceeding without it.", {
+                userId,
+                requestId,
+                error: error instanceof Error ? error.message : String(error),
+            });
+            return null;
+        })
+        : null;
     const executionSteps = executionPlan ? extractPlanSteps(executionPlan) : [];
     let taskState: TaskStateSnapshot | null = executionPlan
         ? {
@@ -678,9 +720,7 @@ export async function runAgentLoop(
         }
         : null;
 
-    if (taskState) {
-        await saveTaskState(userId, requestId, taskState);
-    }
+    await safeSaveTaskState(userId, requestId, taskState);
     const dynamicContext = buildDynamicContext();
     const memoryBlock = memorySummary
         ? `\n\n🧠 Información del usuario:\n${memorySummary}`
@@ -749,8 +789,8 @@ export async function runAgentLoop(
                     taskState.phase = "closed";
                     taskState.status = "completed";
                     taskState.evidence_log = [...(taskState.evidence_log || []), "chart fast-path applied"].slice(-12);
-                    await saveTaskState(userId, requestId, taskState);
-                    await markTaskStateCompleted(userId, requestId, forcedChartReply.slice(0, 280));
+                    await safeSaveTaskState(userId, requestId, taskState);
+                    await safeMarkTaskCompleted(userId, requestId, forcedChartReply.slice(0, 280));
                 }
                 manageConversationSize(userId, llm).catch(err => logger.error("Pruning error:", err));
                 return forcedChartReply;
@@ -769,7 +809,7 @@ export async function runAgentLoop(
         if (taskState) {
             taskState.phase = "execution";
             taskState.steps = markNextTaskStepInProgress(taskState.steps);
-            await saveTaskState(userId, requestId, taskState);
+            await safeSaveTaskState(userId, requestId, taskState);
         }
 
         // Trim context if it's getting too large
@@ -806,7 +846,7 @@ export async function runAgentLoop(
                     taskState.last_tool = toolCall.function.name;
                     taskState.evidence_log = [...(taskState.evidence_log || []), `${toolCall.function.name}: ${result.slice(0, 180)}`].slice(-12);
                     taskState.steps = completeCurrentTaskStep(taskState.steps, `tool:${toolCall.function.name}`);
-                    await saveTaskState(userId, requestId, taskState);
+                    await safeSaveTaskState(userId, requestId, taskState);
                 }
 
                 const toolMessage: LLMMessage = {
@@ -854,7 +894,7 @@ export async function runAgentLoop(
                 taskState.last_tool = legacyCall.toolName;
                 taskState.evidence_log = [...(taskState.evidence_log || []), `${legacyCall.toolName}: ${result.slice(0, 180)}`].slice(-12);
                 taskState.steps = completeCurrentTaskStep(taskState.steps, `tool:${legacyCall.toolName}`);
-                await saveTaskState(userId, requestId, taskState);
+                await safeSaveTaskState(userId, requestId, taskState);
             }
 
             const assistantLegacyMessage: LLMMessage = {
@@ -903,7 +943,7 @@ export async function runAgentLoop(
             if (taskState.steps.length > 0 && !allTaskStepsCompleted(taskState.steps)) {
                 taskState.steps = completeCurrentTaskStep(taskState.steps, "verificación final");
             }
-            await saveTaskState(userId, requestId, taskState);
+            await safeSaveTaskState(userId, requestId, taskState);
         }
         const reply = await enforceDeliveryGate(llm, fullSystemPrompt, userMessage, repairedReply, {
             isCodingTask: detectCodingIntent(userMessage),
@@ -922,8 +962,8 @@ export async function runAgentLoop(
             taskState.phase = "closed";
             taskState.status = "completed";
             taskState.evidence_log = [...(taskState.evidence_log || []), `reply: ${reply.slice(0, 180)}`].slice(-12);
-            await saveTaskState(userId, requestId, taskState);
-            await markTaskStateCompleted(userId, requestId, reply.slice(0, 300));
+            await safeSaveTaskState(userId, requestId, taskState);
+            await safeMarkTaskCompleted(userId, requestId, reply.slice(0, 300));
         }
 
         // Prune conversation if needed (background/async)
@@ -939,8 +979,8 @@ export async function runAgentLoop(
         taskState.phase = "timeout";
         taskState.status = "failed";
         taskState.evidence_log = [...(taskState.evidence_log || []), "timeout: max iterations reached"].slice(-12);
-        await saveTaskState(userId, requestId, taskState);
-        await markTaskStateCompleted(userId, requestId, timeoutMsg);
+        await safeSaveTaskState(userId, requestId, taskState);
+        await safeMarkTaskCompleted(userId, requestId, timeoutMsg);
     }
     logger.warn(`Agent loop reached max iterations (${MAX_ITERATIONS}) for user ${userId}`);
     return timeoutMsg;
