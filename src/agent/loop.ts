@@ -194,6 +194,58 @@ function shouldSaveSemanticMemory(userMessage: string): boolean {
     return !lowSignal.includes(lower);
 }
 
+function needsExecutionPlan(userMessage: string): boolean {
+    const text = userMessage.toLowerCase().trim();
+    if (text.length > 220) return true;
+    const markers = [
+        "plan", "paso a paso", "estrategia", "implementa", "construye", "build", "deploy",
+        "automatiza", "integra", "debug", "arregla", "soluciona", "investiga",
+        "hazme", "crea", "migrar", "refactor", "arquitectura"
+    ];
+    return markers.some((m) => text.includes(m));
+}
+
+async function createExecutionPlan(
+    llm: LLMProvider,
+    userMessage: string,
+    semanticContext: string
+): Promise<string> {
+    const plannerPrompt = [
+        "Eres un planificador de ejecución para un agente autónomo.",
+        "Devuelve un plan breve y accionable para resolver la solicitud del usuario.",
+        "Formato obligatorio:",
+        "PLAN:",
+        "1) ...",
+        "2) ...",
+        "3) ...",
+        "4) ...",
+        "RIESGOS:",
+        "- ...",
+        "Reglas:",
+        "- Máximo 6 pasos.",
+        "- No incluyas explicaciones largas.",
+        "- Si faltan datos, incluye un paso de verificación.",
+    ].join("\n");
+
+    const planningMessages: LLMMessage[] = [
+        { role: "system", content: plannerPrompt },
+        ...(semanticContext ? [{ role: "user" as const, content: `Contexto semántico previo:\n${semanticContext}` }] : []),
+        { role: "user", content: `Solicitud del usuario:\n${userMessage}` },
+    ];
+
+    try {
+        const response = await llm.chat(planningMessages, undefined);
+        const plan = response.message.content?.trim();
+        if (!plan || !plan.toLowerCase().includes("plan")) return "";
+        return plan.slice(0, 1400);
+    } catch (error) {
+        logger.warn("Planning pass failed; continuing without explicit plan.", {
+            error: error instanceof Error ? error.message : String(error),
+        });
+        return "";
+    }
+}
+
 async function loadSkillSnippet(skillName: string): Promise<string | null> {
     try {
         const filePath = path.join(SKILLS_DIR, `${skillName}.md`);
@@ -330,6 +382,9 @@ export async function runAgentLoop(
     const memorySummary = await getMemorySummary(userId);
     const recurrentErrorsSummary = await getRecentErrorPatternsSummary(userId);
     const semanticContext = await getSemanticContext(userId, userMessage, 5);
+    const executionPlan = needsExecutionPlan(userMessage)
+        ? await createExecutionPlan(llm, userMessage, semanticContext)
+        : "";
     const dynamicContext = buildDynamicContext();
     const memoryBlock = memorySummary
         ? `\n\n🧠 Información del usuario:\n${memorySummary}`
@@ -340,11 +395,14 @@ export async function runAgentLoop(
     const semanticBlock = semanticContext
         ? `\n\n🧩 Contexto semántico relevante:\n${semanticContext}`
         : "";
+    const executionPlanBlock = executionPlan
+        ? `\n\n🗺️ Plan interno de ejecución:\n${executionPlan}\nSigue este plan y ajusta si una herramienta falla.`
+        : "";
     
     const rulesBlock = await getRulesSummary(userId);
     const skillsBlock = await buildSkillContext(userMessage);
 
-    const fullSystemPrompt = `${SYSTEM_PROMPT}${dynamicContext}${memoryBlock}${semanticBlock}${recurrentErrorsBlock}${rulesBlock}${skillsBlock}`;
+    const fullSystemPrompt = `${SYSTEM_PROMPT}${dynamicContext}${memoryBlock}${semanticBlock}${executionPlanBlock}${recurrentErrorsBlock}${rulesBlock}${skillsBlock}`;
 
     const messages: LLMMessage[] = [{ role: "system", content: fullSystemPrompt }];
 
@@ -361,6 +419,13 @@ export async function runAgentLoop(
     if (shouldSaveSemanticMemory(userMessage)) {
         saveSemanticMemory(userId, userMessage, "user_message")
             .catch((error) => logger.warn("Could not save semantic memory", {
+                userId,
+                error: error instanceof Error ? error.message : String(error),
+            }));
+    }
+    if (executionPlan) {
+        saveSemanticMemory(userId, `PLAN PARA: ${userMessage}\n${executionPlan}`, "execution_plan")
+            .catch((error) => logger.warn("Could not save execution plan memory", {
                 userId,
                 error: error instanceof Error ? error.message : String(error),
             }));
