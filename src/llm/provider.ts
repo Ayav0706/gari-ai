@@ -281,11 +281,20 @@ export function createLLMProvider(): LLMProvider {
     // 3. OpenRouter (Final fallback)
     if (config.OPENROUTER_API_KEY) {
         const freeFallbackModel = "meta-llama/llama-3.3-70b-instruct:free";
-        const configuredModel = config.OPENROUTER_MODEL?.trim() || freeFallbackModel;
-        const safeModel = configuredModel.endsWith(":free") ? configuredModel : freeFallbackModel;
+        const configuredModel = config.OPENROUTER_MODEL?.trim() || "";
+        const allowedFreeModels = new Set([
+            "meta-llama/llama-3.3-70b-instruct:free",
+            "meta-llama/llama-3.1-8b-instruct:free",
+            "mistralai/mistral-7b-instruct:free",
+            "qwen/qwen-2.5-7b-instruct:free",
+        ]);
 
-        if (configuredModel !== safeModel) {
-            logger.warn("OPENROUTER_MODEL is not free. Falling back to a free model.", {
+        const safeModel = allowedFreeModels.has(configuredModel)
+            ? configuredModel
+            : freeFallbackModel;
+
+        if (configuredModel && configuredModel !== safeModel) {
+            logger.warn("OPENROUTER_MODEL is unsupported/invalid in this runtime. Falling back to a known-good free model.", {
                 configuredModel,
                 safeModel,
             });
