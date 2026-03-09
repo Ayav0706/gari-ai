@@ -284,6 +284,8 @@ export function createBot(llm: LLMProvider, toolRegistry: ToolRegistry): Bot {
         const webhookConfigured = Boolean(config.TELEGRAM_WEBHOOK_URL.trim() || inferredWebhookBase);
         const mode = webhookConfigured ? "webhook" : "polling";
         let dbOk = true;
+        let toolFailures = 0;
+        let recentToolIncidents = 0;
 
         try {
             await getBotStatus(userId);
@@ -296,12 +298,27 @@ export function createBot(llm: LLMProvider, toolRegistry: ToolRegistry): Bot {
             });
         }
 
+        try {
+            if (typeof (toolRegistry as any).getToolHealthStatus === "function") {
+                const status = (toolRegistry as any).getToolHealthStatus() as {
+                    failuresByTool?: Record<string, number>;
+                    recentIncidents?: unknown[];
+                };
+                toolFailures = Object.values(status.failuresByTool || {}).reduce((acc, n) => acc + Number(n || 0), 0);
+                recentToolIncidents = Array.isArray(status.recentIncidents) ? status.recentIncidents.length : 0;
+            }
+        } catch {
+            // keep health lightweight and resilient
+        }
+
         const duration = Date.now() - started;
         await ctx.reply(
             "🩺 **Health Check**\n\n" +
             `• Conexión bot: ✅\n` +
             `• Base de datos: ${dbOk ? "✅" : "❌"}\n` +
             `• Modo: **${mode}**\n` +
+            `• Fallos de tools (acum): **${toolFailures}**\n` +
+            `• Incidentes tools (buffer): **${recentToolIncidents}**\n` +
             `• Uptime: **${formatUptime(Date.now() - BOOT_TIME)}**\n` +
             `• Latencia check: **${duration} ms**\n` +
             `• Check ID: \`${checkId}\``,
