@@ -23,7 +23,7 @@ const envSchema = z.object({
     TELEGRAM_WEBHOOK_SECRET: z.string().default(""),
     TELEGRAM_FORCE_POLLING: z
         .string()
-        .default("true")
+        .default("false")
         .transform((v) => v.trim().toLowerCase() !== "false"),
 
     // Groq (primary LLM)
