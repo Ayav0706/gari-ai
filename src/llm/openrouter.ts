@@ -10,13 +10,14 @@ import type { LLMMessage, LLMProvider, LLMResponse, LLMToolCall, ToolSchema } fr
 const OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions";
 
 export class OpenRouterProvider implements LLMProvider {
-    readonly name = "OpenRouter";
+    readonly name: string;
     private apiKey: string;
     private model: string;
 
     constructor(apiKey: string, model: string) {
         this.apiKey = apiKey;
         this.model = model;
+        this.name = `OpenRouter(${model})`;
     }
 
     async chat(messages: LLMMessage[], tools?: ToolSchema[]): Promise<LLMResponse> {
