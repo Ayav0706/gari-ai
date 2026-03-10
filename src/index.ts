@@ -158,7 +158,12 @@ async function main(): Promise<void> {
         await bot.api.setWebhook(webhookUrl, webhookSecret ? { secret_token: webhookSecret } : {});
         logger.info(`🔗 Webhook mode enabled: ${webhookUrl}`);
 
-        const handleUpdate = webhookCallback(bot, "http");
+        const handleUpdate = webhookCallback(bot, "http", {
+            // Avoid crashing the process when a response takes >10s.
+            // Telegram can retry updates; we keep the bot alive and continue processing.
+            onTimeout: "return",
+            timeoutMilliseconds: 30000,
+        });
         const server = createServer((req, res) => {
             const requestPath = req.url?.split("?")[0] || "/";
 
