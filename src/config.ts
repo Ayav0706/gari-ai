@@ -21,6 +21,10 @@ const envSchema = z.object({
         ),
     TELEGRAM_WEBHOOK_URL: z.string().default(""),
     TELEGRAM_WEBHOOK_SECRET: z.string().default(""),
+    TELEGRAM_FORCE_POLLING: z
+        .string()
+        .default("true")
+        .transform((v) => v.trim().toLowerCase() !== "false"),
 
     // Groq (primary LLM)
     GROQ_API_KEY: z.string().min(1, "GROQ_API_KEY is required"),
