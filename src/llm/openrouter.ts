@@ -47,7 +47,7 @@ export class OpenRouterProvider implements LLMProvider {
         if (!res.ok) {
             const errorText = await res.text();
             logger.error(`OpenRouter API error (${res.status}):`, { error: errorText });
-            throw new Error(`OpenRouter API returned ${res.status}: ${errorText}`);
+            throw new OpenRouterError(`OpenRouter API returned ${res.status}: ${errorText}`, res.status);
         }
 
         const data = await res.json() as OpenRouterRawResponse;
@@ -90,6 +90,16 @@ export class OpenRouterProvider implements LLMProvider {
         if (msg.tool_call_id) formatted.tool_call_id = msg.tool_call_id;
         if (msg.name) formatted.name = msg.name;
         return formatted;
+    }
+}
+
+export class OpenRouterError extends Error {
+    constructor(
+        message: string,
+        public readonly statusCode: number
+    ) {
+        super(message);
+        this.name = "OpenRouterError";
     }
 }
 
