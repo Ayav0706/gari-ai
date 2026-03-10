@@ -295,31 +295,20 @@ export function createLLMProvider(): LLMProvider {
 
     // 3. OpenRouter (Final fallback)
     if (config.OPENROUTER_API_KEY) {
-        const freeFallbackModel = "openai/gpt-oss-20b:free";
         const configuredModel = config.OPENROUTER_MODEL?.trim() || "";
-        const allowedFreeModels = [
-            "openai/gpt-oss-20b:free",
+        const reliabilityFallbacks = [
+            "google/gemini-2.0-flash-001",
+            "openai/gpt-4o-mini",
+            "mistralai/mistral-small-3.2-24b-instruct",
+            "qwen/qwen-2.5-72b-instruct",
+            "anthropic/claude-3.5-haiku",
             "meta-llama/llama-3.3-70b-instruct:free",
-            "mistralai/mistral-7b-instruct:free",
-            "qwen/qwen-2.5-7b-instruct:free",
         ] as const;
-        const allowedSet = new Set<string>(allowedFreeModels);
-
-        const safeModel = allowedSet.has(configuredModel)
-            ? configuredModel
-            : freeFallbackModel;
-
-        if (configuredModel && configuredModel !== safeModel) {
-            logger.warn("OPENROUTER_MODEL is unsupported/invalid in this runtime. Falling back to a known-good free model.", {
-                configuredModel,
-                safeModel,
-            });
-        }
 
         const openRouterChain = [
-            safeModel,
-            ...allowedFreeModels.filter((m) => m !== safeModel),
-        ];
+            ...(configuredModel ? [configuredModel] : []),
+            ...reliabilityFallbacks,
+        ].filter((model, idx, arr) => arr.indexOf(model) === idx);
 
         for (const model of openRouterChain) {
             providers.push(new OpenRouterProvider(config.OPENROUTER_API_KEY, model));
