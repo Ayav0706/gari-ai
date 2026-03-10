@@ -27,8 +27,55 @@ import { chartTool } from "./tools/chart.js";
 import { webhookCallback } from "grammy";
 import { createServer } from "node:http";
 
+function sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isTelegramPollingConflict(error: unknown): boolean {
+    const raw = error instanceof Error ? error.message : String(error);
+    const message = raw.toLowerCase();
+    return (
+        message.includes("getupdates") &&
+        message.includes("409") &&
+        message.includes("terminated by other getupdates request")
+    );
+}
+
+async function startPollingWithRetry(bot: ReturnType<typeof createBot>, shouldStop: () => boolean): Promise<void> {
+    let attempt = 0;
+
+    while (!shouldStop()) {
+        try {
+            await bot.start();
+            if (!shouldStop()) {
+                logger.warn("Polling loop stopped unexpectedly. Retrying...");
+            }
+        } catch (error) {
+            if (isTelegramPollingConflict(error)) {
+                logger.warn(
+                    "Telegram polling conflict (409). Another instance is using this bot token. Retrying without exiting."
+                );
+            } else {
+                logger.error("Polling loop crashed.", {
+                    error: error instanceof Error ? error.message : String(error),
+                });
+            }
+        }
+
+        if (shouldStop()) {
+            break;
+        }
+
+        attempt += 1;
+        const delayMs = Math.min(1000 * Math.pow(2, Math.min(attempt - 1, 5)), 30000);
+        logger.info(`Retrying Telegram polling in ${delayMs} ms (attempt ${attempt}).`);
+        await sleep(delayMs);
+    }
+}
+
 async function main(): Promise<void> {
     logger.info("🚀 Starting Gari...");
+    let shuttingDown = false;
 
     // 1. Database
     await initDatabase();
@@ -79,6 +126,7 @@ async function main(): Promise<void> {
     // 5. Graceful shutdown
     const shutdown = async (signal: string) => {
         logger.info(`\n📴 Received ${signal}. Shutting down gracefully...`);
+        shuttingDown = true;
         bot.stop();
         await closeDatabase();
         logger.info("👋 Gari stopped. ¡Hasta pronto!");
@@ -165,7 +213,7 @@ async function main(): Promise<void> {
             res.end("Not found");
         });
 
-        bot.start();
+        void startPollingWithRetry(bot, () => shuttingDown);
 
         server.on("error", (err: unknown) => {
             const error = err as NodeJS.ErrnoException;
