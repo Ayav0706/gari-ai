@@ -41,6 +41,7 @@ const envSchema = z.object({
 
     // Database
     DB_PATH: z.string().default("./data/memory.db"),
+    AGENT_REQUEST_TIMEOUT_MS: z.coerce.number().int().positive().default(90000),
 
     // Firebase credentials
     GOOGLE_APPLICATION_CREDENTIALS: z.string().default("./service-account.json"),
