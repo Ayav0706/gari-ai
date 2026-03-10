@@ -143,7 +143,12 @@ async function main(): Promise<void> {
     logger.info("──────────────────────────────────────");
 
     const configuredWebhookUrl = config.TELEGRAM_WEBHOOK_URL.trim();
-    const webhookUrl = config.TELEGRAM_FORCE_POLLING ? "" : configuredWebhookUrl;
+    const inferredWebhookUrl = process.env.RENDER_EXTERNAL_URL?.trim()
+        ? `${process.env.RENDER_EXTERNAL_URL.trim().replace(/\/+$/, "")}/telegram/webhook`
+        : "";
+    const webhookUrl = config.TELEGRAM_FORCE_POLLING
+        ? ""
+        : configuredWebhookUrl || inferredWebhookUrl;
     const webhookSecret = config.TELEGRAM_WEBHOOK_SECRET.trim();
     const port = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
     const host = "0.0.0.0";
@@ -197,7 +202,7 @@ async function main(): Promise<void> {
         if (config.TELEGRAM_FORCE_POLLING) {
             logger.info("ℹ️ TELEGRAM_FORCE_POLLING=true. Usando polling para mayor estabilidad.");
         } else if (process.env.RENDER_EXTERNAL_URL?.trim()) {
-            logger.info("ℹ️ RENDER_EXTERNAL_URL detectado, pero TELEGRAM_WEBHOOK_URL no está configurado. Usando polling para mayor estabilidad.");
+            logger.info("ℹ️ RENDER_EXTERNAL_URL detectado, pero webhook deshabilitado. Usando polling para mayor estabilidad.");
         }
         await bot.api.deleteWebhook({ drop_pending_updates: false });
         logger.info("📡 Polling mode enabled (no webhook URL configured).");
