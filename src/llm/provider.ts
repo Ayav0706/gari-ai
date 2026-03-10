@@ -282,14 +282,15 @@ export function createLLMProvider(): LLMProvider {
     if (config.OPENROUTER_API_KEY) {
         const freeFallbackModel = "meta-llama/llama-3.3-70b-instruct:free";
         const configuredModel = config.OPENROUTER_MODEL?.trim() || "";
-        const allowedFreeModels = new Set([
+        const allowedFreeModels = [
             "meta-llama/llama-3.3-70b-instruct:free",
             "meta-llama/llama-3.1-8b-instruct:free",
             "mistralai/mistral-7b-instruct:free",
             "qwen/qwen-2.5-7b-instruct:free",
-        ]);
+        ] as const;
+        const allowedSet = new Set<string>(allowedFreeModels);
 
-        const safeModel = allowedFreeModels.has(configuredModel)
+        const safeModel = allowedSet.has(configuredModel)
             ? configuredModel
             : freeFallbackModel;
 
@@ -300,7 +301,14 @@ export function createLLMProvider(): LLMProvider {
             });
         }
 
-        providers.push(new OpenRouterProvider(config.OPENROUTER_API_KEY, safeModel));
+        const openRouterChain = [
+            safeModel,
+            ...allowedFreeModels.filter((m) => m !== safeModel),
+        ];
+
+        for (const model of openRouterChain) {
+            providers.push(new OpenRouterProvider(config.OPENROUTER_API_KEY, model));
+        }
     }
 
     const chainNames = providers.map(p => p.name).join(" \u2192 ");
