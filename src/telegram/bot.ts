@@ -232,7 +232,15 @@ export function createBot(llm: LLMProvider, toolRegistry: ToolRegistry): Bot {
         }
 
         // Check if bot is stopped for this user
-        const status = await getBotStatus(userId);
+        let status: "active" | "stopped" = "active";
+        try {
+            status = await getBotStatus(userId);
+        } catch (error) {
+            logger.warn("Auth middleware could not read bot status; allowing request (fail-open).", {
+                userId,
+                error: error instanceof Error ? error.message : String(error),
+            });
+        }
         if (status === "stopped") {
             // Silently ignore if stopped, as requested.
             // But we could optionally logs it:
@@ -307,7 +315,15 @@ export function createBot(llm: LLMProvider, toolRegistry: ToolRegistry): Bot {
     // ── /status ─────────────────────────────────
     bot.command("status", async (ctx) => {
         const userId = ctx.from!.id;
-        const status = await getBotStatus(userId);
+        let status: "active" | "stopped" | "unknown" = "unknown";
+        try {
+            status = await getBotStatus(userId);
+        } catch (error) {
+            logger.warn("Status command could not read bot status.", {
+                userId,
+                error: error instanceof Error ? error.message : String(error),
+            });
+        }
         const mode = getConnectionMode();
 
         await ctx.reply(
@@ -728,11 +744,21 @@ export function createBot(llm: LLMProvider, toolRegistry: ToolRegistry): Bot {
     });
 
     // ── Error Handler ───────────────────────────
-    bot.catch((err) => {
+    bot.catch(async (err) => {
         const requestId = createRequestId();
         logger.error("Bot error:", { requestId, error: err.message ?? String(err) });
         const userId = err.ctx?.from?.id;
         void rememberRuntimeError(userId, "bot.catch", err.error ?? err.message, requestId);
+        try {
+            if (err.ctx?.chat?.id) {
+                await err.ctx.reply(
+                    `⚠️ Ocurrió un error interno en Gari, pero sigo activo.\n\nID: \`${requestId}\``,
+                    { parse_mode: "Markdown" }
+                );
+            }
+        } catch {
+            // Avoid secondary crash from error-notification path.
+        }
     });
 
     return bot;
