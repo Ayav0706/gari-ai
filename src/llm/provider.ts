@@ -40,7 +40,12 @@ class FailoverProvider implements LLMProvider {
     }
 
     private getErrorStatus(error: any): number {
-        return error?.statusCode || error?.status || 0;
+        const explicit = error?.statusCode || error?.status;
+        if (typeof explicit === "number" && Number.isFinite(explicit)) return explicit;
+        const message = String(error?.message || "");
+        const match = message.match(/\b([1-5]\d{2})\b/);
+        if (match) return Number(match[1]);
+        return 0;
     }
 
     private classifyError(error: any): "rate_limit" | "auth" | "service" | "bad_request" | "tool_use_failed" | "unknown" {
@@ -49,8 +54,16 @@ class FailoverProvider implements LLMProvider {
         if (error?.isToolUseFailed || message.includes("tool_use_failed")) return "tool_use_failed";
         if (status === 429 || message.includes("429") || error?.isRateLimit) return "rate_limit";
         if (status === 401 || status === 403 || message.includes("401") || message.includes("403")) return "auth";
-        if (status >= 500 || message.includes("500") || message.includes("503")) return "service";
-        if (status === 400 || message.includes("400") || message.includes("invalid_request")) return "bad_request";
+        if (
+            status >= 500 ||
+            status === 408 ||
+            status === 404 ||
+            message.includes("500") ||
+            message.includes("503") ||
+            message.includes("timeout") ||
+            message.includes("no endpoints found")
+        ) return "service";
+        if (status === 400 || status === 422 || message.includes("400") || message.includes("invalid_request")) return "bad_request";
         return "unknown";
     }
 
@@ -197,15 +210,17 @@ class FailoverProvider implements LLMProvider {
                         break;
                     }
 
-                    // Unknown errors keep fail-fast behavior to avoid hiding critical bugs.
+                    // Unknown errors on external providers should degrade to the next provider.
+                    // This avoids dropping to local contingency for transient provider quirks.
                     this.recordIncident(
                         provider.name,
                         category,
                         status,
-                        "fail_fast",
+                        "fallback_next_provider_unknown",
                         String(error?.message || "unknown error")
                     );
-                    throw error;
+                    this.setCooldown(provider.name, 45_000);
+                    break;
                 }
             }
         }
@@ -280,11 +295,11 @@ export function createLLMProvider(): LLMProvider {
 
     // 3. OpenRouter (Final fallback)
     if (config.OPENROUTER_API_KEY) {
-        const freeFallbackModel = "meta-llama/llama-3.3-70b-instruct:free";
+        const freeFallbackModel = "openai/gpt-oss-20b:free";
         const configuredModel = config.OPENROUTER_MODEL?.trim() || "";
         const allowedFreeModels = [
+            "openai/gpt-oss-20b:free",
             "meta-llama/llama-3.3-70b-instruct:free",
-            "meta-llama/llama-3.1-8b-instruct:free",
             "mistralai/mistral-7b-instruct:free",
             "qwen/qwen-2.5-7b-instruct:free",
         ] as const;
