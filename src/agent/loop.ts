@@ -711,6 +711,55 @@ function buildMinimalFallbackPrompt(): string {
     ].join("\n");
 }
 
+function buildLocalFallbackReply(userMessage: string): string {
+    const normalized = userMessage
+        .toLowerCase()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "");
+
+    const planningKeywords = [
+        "plan",
+        "planificar",
+        "automatizar",
+        "automatizacion",
+        "google sheets",
+        "sheets",
+        "sheet",
+        "correo",
+        "email",
+        "mail",
+        "reporte",
+        "informe",
+        "workflow",
+        "flujo",
+    ];
+
+    const isPlanningIntent = planningKeywords.some((keyword) => normalized.includes(keyword));
+    if (isPlanningIntent) {
+        return [
+            "Plan de acción sugerido (modo local):",
+            "1. Define el objetivo exacto y el resultado esperado en una sola frase.",
+            "2. Lista las entradas necesarias (fuentes de datos, frecuencia, formato de salida y destinatarios).",
+            "3. Diseña el flujo: captura de datos -> transformación -> generación de salida -> envío/publicación.",
+            "4. Implementa primero una versión mínima manual para validar el proceso de punta a punta.",
+            "5. Automatiza por bloques (obtención, procesamiento, entrega) con manejo de errores y reintentos.",
+            "6. Verifica con una corrida de prueba: compara resultados esperados vs. reales y registra fallos.",
+            "7. Próximos pasos: programa ejecución recurrente, añade alertas y define métricas de éxito.",
+        ].join("\n");
+    }
+
+    return [
+        "Puedo ayudarte a avanzar con un enfoque claro, incluso en modo local:",
+        "1. Describe brevemente qué quieres lograr.",
+        "2. Identifica qué información ya tienes y qué te falta.",
+        "3. Elige el formato de salida que necesitas (pasos, plantilla, checklist o borrador).",
+        "4. Ejecuta una primera versión corta y revisa el resultado.",
+        "",
+        "Aclaración necesaria:",
+        "¿Cuál es el resultado exacto que quieres obtener en una sola frase?",
+    ].join("\n");
+}
+
 /**
  * Run the agent loop for a user message.
  * Returns the final text response to send back to the user.
@@ -886,7 +935,11 @@ export async function runAgentLoop(
                 });
             }
 
-            return `⚠️ Lo siento, hubo un error al procesar tu mensaje. Intenta de nuevo en un momento.\n\nID: \`${requestId}\``;
+            const localFallbackBody = buildLocalFallbackReply(userMessage);
+            const localFallbackReply = `${localFallbackBody}\n\n_Nota: respuesta local de contingencia (sin LLM)._` +
+                `\n\nID: \`${requestId}\``;
+            await saveConversationMessage(userId, "assistant", localFallbackReply, undefined, undefined, order++, requestId);
+            return localFallbackReply;
         }
 
         const { message, finish_reason } = response;
