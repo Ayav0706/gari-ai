@@ -133,6 +133,16 @@ async function main(): Promise<void> {
             res.end("Not found");
         });
 
+        server.on("error", (err: unknown) => {
+            const error = err as NodeJS.ErrnoException;
+            logger.error("❌ Failed to start webhook HTTP server.", {
+                code: error?.code,
+                message: error?.message,
+                port,
+            });
+            process.exit(1);
+        });
+
         server.listen(port, host, () => {
             logger.info(`🌐 HTTP server listening on http://${host}:${port}`);
         });
@@ -151,11 +161,24 @@ async function main(): Promise<void> {
             res.end("Not found");
         });
 
+        bot.start();
+
+        server.on("error", (err: unknown) => {
+            const error = err as NodeJS.ErrnoException;
+            if (error?.code === "EADDRINUSE") {
+                logger.warn(`⚠️ Health server port ${port} is already in use. Continuing in polling mode without local HTTP health endpoint.`);
+                return;
+            }
+            logger.error("❌ Failed to start local health check server.", {
+                code: error?.code,
+                message: error?.message,
+                port,
+            });
+        });
+
         server.listen(port, host, () => {
             logger.info(`🌐 Health check server listening on http://${host}:${port}`);
         });
-
-        bot.start();
     }
 }
 
