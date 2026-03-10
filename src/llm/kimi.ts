@@ -44,7 +44,7 @@ export class KimiProvider implements LLMProvider {
             if (!response.ok) {
                 const errorData = await response.json();
                 logger.error(`Kimi API error (${response.status}):`, errorData);
-                throw new Error(`KIMI_API_ERROR: ${response.status}`);
+                throw new KimiError(`KIMI_API_ERROR: ${response.status}`, response.status);
             }
 
             const data = await response.json();
@@ -58,5 +58,15 @@ export class KimiProvider implements LLMProvider {
             logger.error(`Kimi chat failed: ${error.message}`);
             throw error;
         }
+    }
+}
+
+export class KimiError extends Error {
+    constructor(
+        message: string,
+        public readonly statusCode: number
+    ) {
+        super(message);
+        this.name = "KimiError";
     }
 }
