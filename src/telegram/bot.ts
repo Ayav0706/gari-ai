@@ -3,7 +3,7 @@
 // ============================================
 // grammY bot with long polling. No webhook, no web server.
 // Auth middleware whitelists user IDs.
-// Commands: /start, /help, /remember, /recall, /forget, /clear
+// Commands: /start, /help, /diag, /remember, /recall, /forget, /clear
 
 import { Bot } from "grammy";
 import { randomUUID } from "node:crypto";
@@ -35,6 +35,7 @@ const TELEGRAM_COMMANDS = [
     { command: "ping", description: "Probar si el bot está activo" },
     { command: "status", description: "Ver estado actual del bot" },
     { command: "health", description: "Diagnóstico rápido del sistema" },
+    { command: "diag", description: "Resumen corto de diagnóstico" },
     { command: "id", description: "Ver tu user ID de Telegram" },
     { command: "remember", description: "Guardar un recuerdo" },
     { command: "recall", description: "Leer un recuerdo" },
@@ -46,7 +47,6 @@ const TELEGRAM_COMMANDS = [
     { command: "bot_start", description: "Reanudar respuestas del bot" },
 ] as const;
 const BOOT_TIME = Date.now();
-const AGENT_REQUEST_TIMEOUT_MS = 90_000;
 
 export async function registerTelegramCommands(bot: Bot): Promise<void> {
     try {
@@ -118,6 +118,40 @@ function formatUptime(ms: number): string {
     const minutes = Math.floor((totalSec % 3600) / 60);
     const seconds = totalSec % 60;
     return `${hours}h ${minutes}m ${seconds}s`;
+}
+
+function getConnectionMode(): "webhook" | "polling" {
+    const inferredWebhookBase = process.env.RENDER_EXTERNAL_URL?.trim() || "";
+    const webhookConfigured = Boolean(config.TELEGRAM_WEBHOOK_URL.trim() || inferredWebhookBase);
+    return webhookConfigured ? "webhook" : "polling";
+}
+
+type ToolHealthSummary = {
+    available: boolean;
+    failures: number;
+    incidents: number;
+};
+
+function getToolHealthSummary(toolRegistry: ToolRegistry): ToolHealthSummary {
+    try {
+        const maybeRegistry = toolRegistry as ToolRegistry & {
+            getToolHealthStatus?: () => {
+                failuresByTool?: Record<string, number>;
+                recentIncidents?: unknown[];
+            };
+        };
+
+        if (typeof maybeRegistry.getToolHealthStatus !== "function") {
+            return { available: false, failures: 0, incidents: 0 };
+        }
+
+        const status = maybeRegistry.getToolHealthStatus();
+        const failures = Object.values(status.failuresByTool || {}).reduce((acc, n) => acc + Number(n || 0), 0);
+        const incidents = Array.isArray(status.recentIncidents) ? status.recentIncidents.length : 0;
+        return { available: true, failures, incidents };
+    } catch {
+        return { available: false, failures: 0, incidents: 0 };
+    }
 }
 
 function buildFriendlyErrorMessage(error: unknown, requestId: string): string {
@@ -219,6 +253,7 @@ export function createBot(llm: LLMProvider, toolRegistry: ToolRegistry): Bot {
             "• /ping — Verificar que estoy vivo\n" +
             "• /status — Ver estado del bot\n" +
             "• /health — Diagnóstico rápido\n" +
+            "• /diag — Resumen corto de diagnóstico\n" +
             "• /id — Ver tu user ID\n" +
             "• /remember `clave` `valor` — Guardar en memoria\n" +
             "• /recall `clave` — Recuperar de memoria\n" +
@@ -241,6 +276,7 @@ export function createBot(llm: LLMProvider, toolRegistry: ToolRegistry): Bot {
             "🟢 `/ping` — Comprobar si estoy activo\n" +
             "📊 `/status` — Estado del bot y modo de conexión\n" +
             "🩺 `/health` — Diagnóstico de salud del sistema\n" +
+            "🧪 `/diag` — Resumen corto (uptime, modo y tools)\n" +
             "🆔 `/id` — Mostrar tu user ID\n" +
             "💾 `/remember clave valor` — Guardar información\n" +
             "🔍 `/recall clave` — Recuperar información guardada\n" +
@@ -272,9 +308,7 @@ export function createBot(llm: LLMProvider, toolRegistry: ToolRegistry): Bot {
     bot.command("status", async (ctx) => {
         const userId = ctx.from!.id;
         const status = await getBotStatus(userId);
-        const inferredWebhookBase = process.env.RENDER_EXTERNAL_URL?.trim() || "";
-        const webhookConfigured = Boolean(config.TELEGRAM_WEBHOOK_URL.trim() || inferredWebhookBase);
-        const mode = webhookConfigured ? "webhook" : "polling";
+        const mode = getConnectionMode();
 
         await ctx.reply(
             "📊 **Estado de Gari**\n\n" +
@@ -290,12 +324,9 @@ export function createBot(llm: LLMProvider, toolRegistry: ToolRegistry): Bot {
         const checkId = createRequestId();
         const started = Date.now();
         const userId = ctx.from!.id;
-        const inferredWebhookBase = process.env.RENDER_EXTERNAL_URL?.trim() || "";
-        const webhookConfigured = Boolean(config.TELEGRAM_WEBHOOK_URL.trim() || inferredWebhookBase);
-        const mode = webhookConfigured ? "webhook" : "polling";
+        const mode = getConnectionMode();
         let dbOk = true;
-        let toolFailures = 0;
-        let recentToolIncidents = 0;
+        const toolHealth = getToolHealthSummary(toolRegistry);
 
         try {
             await getBotStatus(userId);
@@ -308,30 +339,35 @@ export function createBot(llm: LLMProvider, toolRegistry: ToolRegistry): Bot {
             });
         }
 
-        try {
-            if (typeof (toolRegistry as any).getToolHealthStatus === "function") {
-                const status = (toolRegistry as any).getToolHealthStatus() as {
-                    failuresByTool?: Record<string, number>;
-                    recentIncidents?: unknown[];
-                };
-                toolFailures = Object.values(status.failuresByTool || {}).reduce((acc, n) => acc + Number(n || 0), 0);
-                recentToolIncidents = Array.isArray(status.recentIncidents) ? status.recentIncidents.length : 0;
-            }
-        } catch {
-            // keep health lightweight and resilient
-        }
-
         const duration = Date.now() - started;
         await ctx.reply(
             "🩺 **Health Check**\n\n" +
             `• Conexión bot: ✅\n` +
             `• Base de datos: ${dbOk ? "✅" : "❌"}\n` +
             `• Modo: **${mode}**\n` +
-            `• Fallos de tools (acum): **${toolFailures}**\n` +
-            `• Incidentes tools (buffer): **${recentToolIncidents}**\n` +
+            `• Fallos de tools (acum): **${toolHealth.failures}**\n` +
+            `• Incidentes tools (buffer): **${toolHealth.incidents}**\n` +
             `• Uptime: **${formatUptime(Date.now() - BOOT_TIME)}**\n` +
             `• Latencia check: **${duration} ms**\n` +
             `• Check ID: \`${checkId}\``,
+            { parse_mode: "Markdown" }
+        );
+    });
+
+    // ── /diag ─────────────────────────────────
+    bot.command("diag", async (ctx) => {
+        const mode = getConnectionMode();
+        const toolHealth = getToolHealthSummary(toolRegistry);
+        const toolsLine = toolHealth.available
+            ? `• Tools: fallos **${toolHealth.failures}** | incidentes **${toolHealth.incidents}**\n`
+            : "• Tools: **sin métricas**\n";
+
+        await ctx.reply(
+            "🧪 **Diag rápido**\n\n" +
+            `• Uptime: **${formatUptime(Date.now() - BOOT_TIME)}**\n` +
+            `• Modo: **${mode}**\n` +
+            toolsLine +
+            `• Timeout agente: **${config.AGENT_REQUEST_TIMEOUT_MS} ms**`,
             { parse_mode: "Markdown" }
         );
     });
@@ -535,7 +571,7 @@ export function createBot(llm: LLMProvider, toolRegistry: ToolRegistry): Bot {
         try {
             const reply = await runAgentLoopWithDeadline(
                 runAgentLoop(userMessage, userId, llm, toolRegistry),
-                AGENT_REQUEST_TIMEOUT_MS
+                config.AGENT_REQUEST_TIMEOUT_MS
             );
             await sendReplyWithChartSupport(ctx, reply);
         } catch (error) {
@@ -596,7 +632,7 @@ export function createBot(llm: LLMProvider, toolRegistry: ToolRegistry): Bot {
             try {
                 const reply = await runAgentLoopWithDeadline(
                     runAgentLoop(transcription, userId, llm, toolRegistry),
-                    AGENT_REQUEST_TIMEOUT_MS
+                    config.AGENT_REQUEST_TIMEOUT_MS
                 );
 
                 // Try to respond with audio if TTS is available
@@ -638,7 +674,7 @@ export function createBot(llm: LLMProvider, toolRegistry: ToolRegistry): Bot {
             try {
                 const reply = await runAgentLoopWithDeadline(
                     runAgentLoop(enrichedMessage, userId, llm, toolRegistry),
-                    AGENT_REQUEST_TIMEOUT_MS
+                    config.AGENT_REQUEST_TIMEOUT_MS
                 );
                 await sendReplyWithChartSupport(ctx, reply);
             } catch (error) {
@@ -669,7 +705,7 @@ export function createBot(llm: LLMProvider, toolRegistry: ToolRegistry): Bot {
             try {
                 const reply = await runAgentLoopWithDeadline(
                     runAgentLoop(enrichedMessage, userId, llm, toolRegistry),
-                    AGENT_REQUEST_TIMEOUT_MS
+                    config.AGENT_REQUEST_TIMEOUT_MS
                 );
                 await sendReplyWithChartSupport(ctx, reply);
             } catch (error) {
