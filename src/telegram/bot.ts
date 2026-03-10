@@ -121,7 +121,7 @@ function formatUptime(ms: number): string {
 }
 
 function getConnectionMode(): "webhook" | "polling" {
-    const webhookConfigured = Boolean(config.TELEGRAM_WEBHOOK_URL.trim());
+    const webhookConfigured = !config.TELEGRAM_FORCE_POLLING && Boolean(config.TELEGRAM_WEBHOOK_URL.trim());
     return webhookConfigured ? "webhook" : "polling";
 }
 
