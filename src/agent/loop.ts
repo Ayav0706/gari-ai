@@ -328,11 +328,24 @@ function shouldSaveSemanticMemory(userMessage: string): boolean {
 
 function needsExecutionPlan(userMessage: string): boolean {
     const text = userMessage.toLowerCase().trim();
-    if (text.length > 220) return true;
+    if (text.length > 160) return true;
+    const clauseCount = text.split(/[,.!?;:]/).filter((p) => p.trim().length > 0).length;
+    if (clauseCount >= 3 && text.length > 90) return true;
     const markers = [
         "plan", "paso a paso", "estrategia", "implementa", "construye", "build", "deploy",
         "automatiza", "integra", "debug", "arregla", "soluciona", "investiga",
-        "hazme", "crea", "migrar", "refactor", "arquitectura"
+        "hazme", "crea", "migrar", "refactor", "arquitectura", "optimiza",
+        "analiza", "diseña", "comparar", "compara", "roadmap"
+    ];
+    return markers.some((m) => text.includes(m));
+}
+
+function needsFreshGrounding(userMessage: string): boolean {
+    const text = userMessage.toLowerCase();
+    const markers = [
+        "hoy", "actual", "reciente", "último", "ultima", "latest", "today",
+        "precio", "cotización", "noticia", "noticias", "presidente", "ceo",
+        "inflación", "dólar", "bitcoin", "btc", "clima", "partido", "resultado",
     ];
     return markers.some((m) => text.includes(m));
 }
@@ -716,6 +729,7 @@ export async function runAgentLoop(
     const recurrentErrorsSummary = await getRecentErrorPatternsSummary(userId);
     const semanticContext = await getSemanticContext(userId, userMessage, 5);
     const isComplexTask = needsExecutionPlan(userMessage);
+    const requiresFreshGrounding = needsFreshGrounding(userMessage);
     const executionPlan = isComplexTask
         ? await createExecutionPlan(llm, userMessage, semanticContext)
         : "";
@@ -759,11 +773,14 @@ export async function runAgentLoop(
     const resumedTaskBlock = resumedTaskState
         ? `\n\n📌 Estado de tarea previa activa:\nObjetivo: ${resumedTaskState.objective || "N/A"}\nFase: ${resumedTaskState.phase || "N/A"}\nPlan:\n${resumedTaskState.plan_text || ""}`
         : "";
+    const groundingBlock = requiresFreshGrounding
+        ? `\n\n🛰️ Instrucción de grounding factual:\nLa solicitud parece sensible a actualidad/fuentes externas. Usa herramientas de búsqueda/lectura web antes de concluir y aclara fecha de referencia en tu respuesta final.`
+        : "";
     
     const rulesBlock = await getRulesSummary(userId);
     const skillsBlock = await buildSkillContext(userMessage);
 
-    const fullSystemPrompt = `${SYSTEM_PROMPT}${dynamicContext}${memoryBlock}${semanticBlock}${executionPlanBlock}${resumedTaskBlock}${recurrentErrorsBlock}${rulesBlock}${skillsBlock}`;
+    const fullSystemPrompt = `${SYSTEM_PROMPT}${dynamicContext}${memoryBlock}${semanticBlock}${executionPlanBlock}${resumedTaskBlock}${groundingBlock}${recurrentErrorsBlock}${rulesBlock}${skillsBlock}`;
 
     const messages: LLMMessage[] = [{ role: "system", content: fullSystemPrompt }];
 
